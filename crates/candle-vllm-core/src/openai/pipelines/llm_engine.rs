@@ -18,12 +18,14 @@ use crate::parking_lot::{
     ResourceAdapter, ResourceCost, ResourceCostExt, SerializableInferenceResult, StreamingRegistry,
     StreamingTokenResult, TaskExecutor, TaskMetadata,
 };
+use crate::prompt_cache::PromptCacheManager;
 use crate::scheduler::Scheduler;
 use crate::{
     openai::{
         models::Config,
         responses::{
             ChatChoice, ChatCompletionChunk, ChatCompletionUsageResponse, Choice, ChoiceData,
+            PromptTokensDetails,
         },
     },
     scheduler::cache_engine::{CacheConfig, CacheEngine},
@@ -38,6 +40,8 @@ use tracing::{error, info, warn};
 /// Configuration for the parking-lot scheduler.
 #[derive(Debug, Clone)]
 pub struct SchedulerPoolConfig {
+    /// Number of dedicated worker threads for inference
+    pub worker_threads: usize,
     /// Maximum resource units (GPU blocks) the pool can use
     pub max_units: usize,
     /// Maximum queue depth before rejecting requests
@@ -49,6 +53,7 @@ pub struct SchedulerPoolConfig {
 impl Default for SchedulerPoolConfig {
     fn default() -> Self {
         Self {
+            worker_threads: num_cpus::get(),
             max_units: 16384,          // ~256K tokens with 16-token blocks
             max_queue_depth: 1000,     // Allow 1000 queued requests
             default_timeout_secs: 120, // 2 minute timeout
@@ -59,9 +64,52 @@ impl Default for SchedulerPoolConfig {
 impl SchedulerPoolConfig {
     /// Create config from cache configuration.
     pub fn from_cache_config(cache_config: &CacheConfig) -> Self {
+        let mut config = Self::default();
+        config.max_units = cache_config.num_gpu_blocks.unwrap_or(config.max_units);
+        config
+    }
+}
+
+/// Wrapper around a flume receiver that signals cleanup when dropped.
+/// This ensures resources are released when the streaming response completes or is abandoned.
+pub struct CleanupReceiver {
+    inner: flume::Receiver<std::result::Result<StreamingTokenResult, String>>,
+    cleanup_signal: Option<flume::Sender<()>>,
+    request_id: String,
+}
+
+impl CleanupReceiver {
+    fn new(
+        inner: flume::Receiver<std::result::Result<StreamingTokenResult, String>>,
+        cleanup_signal: flume::Sender<()>,
+        request_id: String,
+    ) -> Self {
         Self {
-            max_units: cache_config.num_gpu_blocks.unwrap_or(16384),
-            ..Default::default()
+            inner,
+            cleanup_signal: Some(cleanup_signal),
+            request_id,
+        }
+    }
+}
+
+// Implement Deref so it acts like the inner receiver
+impl std::ops::Deref for CleanupReceiver {
+    type Target = flume::Receiver<std::result::Result<StreamingTokenResult, String>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+// Signal cleanup when dropped (either naturally or on client disconnect)
+impl Drop for CleanupReceiver {
+    fn drop(&mut self) {
+        if let Some(signal) = self.cleanup_signal.take() {
+            info!(
+                "🧹 CLEANUP: CleanupReceiver dropped, signaling cleanup - request_id={}",
+                self.request_id
+            );
+            let _ = signal.try_send(());
         }
     }
 }
@@ -140,6 +188,12 @@ pub struct LLMEngine {
 
     /// Current resource units in use
     used_units: Arc<std::sync::atomic::AtomicUsize>,
+
+    /// Optional prompt cache manager for prefix caching
+    prompt_cache: Option<Arc<PromptCacheManager>>,
+
+    /// Track cached tokens per request for usage reporting
+    cached_tokens: RwLock<HashMap<String, usize>>,
 }
 
 impl LLMEngine {
@@ -155,6 +209,31 @@ impl LLMEngine {
         config: &Config,
         notify: Arc<Notify>,
         pool_config: Option<SchedulerPoolConfig>,
+        #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
+    ) -> Result<Self> {
+        Self::new_with_cache(
+            pipelines,
+            scheduler_config,
+            cache_config,
+            config,
+            notify,
+            pool_config,
+            None,
+            #[cfg(feature = "nccl")]
+            daemon_manager,
+        )
+    }
+
+    /// Create a new `LLMEngine` with optional prompt cache.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_cache(
+        pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
+        scheduler_config: crate::scheduler::SchedulerConfig,
+        cache_config: &CacheConfig,
+        config: &Config,
+        notify: Arc<Notify>,
+        pool_config: Option<SchedulerPoolConfig>,
+        prompt_cache: Option<Arc<PromptCacheManager>>,
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
     ) -> Result<Self> {
         info!(
@@ -186,14 +265,17 @@ impl LLMEngine {
             pool_config.unwrap_or_else(|| SchedulerPoolConfig::from_cache_config(cache_config));
 
         info!(
-            "Pool config: max_units={}, max_queue_depth={}, timeout={}s",
-            pool_config.max_units, pool_config.max_queue_depth, pool_config.default_timeout_secs
+            event = "engine_pool_config",
+            max_units = pool_config.max_units,
+            max_queue_depth = pool_config.max_queue_depth,
+            timeout_secs = pool_config.default_timeout_secs,
+            worker_threads = pool_config.worker_threads
         );
 
         // Create thread pool for CPU-bound inference work
         let streaming_registry = StreamingRegistry::with_default_retention();
         let worker_pool_config = InferenceWorkerPoolConfig {
-            worker_count: num_cpus::get(),
+            worker_count: pool_config.worker_threads,
             max_units: pool_config.max_units as u32,
             max_queue_depth: pool_config.max_queue_depth,
             timeout_secs: pool_config.default_timeout_secs,
@@ -243,9 +325,15 @@ impl LLMEngine {
             daemon_manager: RwLock::new(daemon_manager),
             in_flight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_units: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            prompt_cache: prompt_cache.clone(),
+            cached_tokens: RwLock::new(HashMap::new()),
         };
 
-        info!("LLMEngine initialized with parking-lot scheduler");
+        if prompt_cache.is_some() {
+            info!("LLMEngine initialized with prompt caching enabled");
+        } else {
+            info!("LLMEngine initialized with parking-lot scheduler");
+        }
 
         Ok(engine)
     }
@@ -378,6 +466,24 @@ impl LLMEngine {
             "✅ ENGINE: Capacity check passed - request_id={}",
             request_id
         );
+
+        // Check prompt cache for prefix match
+        let _cached_tokens = if let Some(ref cache_manager) = self.prompt_cache {
+            if let Ok(Some(cached_match)) = cache_manager.find_cached_prefix(&tokens).await {
+                let cached_count = cached_match.cached_tokens;
+                info!(
+                    "💾 CACHE: Found cached prefix - request_id={}, cached_tokens={}",
+                    request_id, cached_count
+                );
+                // Store cached token count for usage reporting
+                self.cached_tokens.write().insert(request_id.clone(), cached_count);
+                cached_count
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         // Reserve resources
         info!(
@@ -528,7 +634,7 @@ impl LLMEngine {
         sampling_params: crate::openai::sampling_params::SamplingParams,
         created: u64,
         max_context_len: usize,
-    ) -> Result<flume::Receiver<std::result::Result<StreamingTokenResult, String>>> {
+    ) -> Result<CleanupReceiver> {
         let prompt_len = tokens.len();
         let max_tokens = sampling_params.max_tokens;
 
@@ -567,6 +673,24 @@ impl LLMEngine {
             "✅ ENGINE: Capacity check passed - request_id={}",
             request_id
         );
+
+        // Check prompt cache for prefix match
+        let _cached_tokens = if let Some(ref cache_manager) = self.prompt_cache {
+            if let Ok(Some(cached_match)) = cache_manager.find_cached_prefix(&tokens).await {
+                let cached_count = cached_match.cached_tokens;
+                info!(
+                    "💾 CACHE: Found cached prefix - request_id={}, cached_tokens={}",
+                    request_id, cached_count
+                );
+                // Store cached token count for usage reporting
+                self.cached_tokens.write().insert(request_id.clone(), cached_count);
+                cached_count
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         // Reserve resources
         info!(
@@ -617,51 +741,78 @@ impl LLMEngine {
             // Submit to worker pool
             match pool.submit(job, meta).await {
                 Ok(SerializableInferenceResult::StreamingChannel { channel_key, .. }) => {
-                    info!("✅ ENGINE: Got streaming channel key from worker pool - request_id={}, key={}", request_id, channel_key);
+                    info!(
+                        "✅ ENGINE: Got streaming channel key from worker pool - request_id={}, key={}",
+                        request_id, channel_key
+                    );
 
                     // Retrieve the channel from the registry
                     let token_rx = pool
                         .streaming_registry()
                         .retrieve(&channel_key)
                         .ok_or_else(|| {
-                            error!("❌ ENGINE: Streaming channel not found in registry - request_id={}, key={}", request_id, channel_key);
+                            error!(
+                                "❌ ENGINE: Streaming channel not found in registry - request_id={}, key={}",
+                                request_id, channel_key
+                            );
                             candle_core::Error::Msg(format!(
                                 "Streaming channel not found: {}",
                                 channel_key
                             ))
                         })?;
 
-                    // Spawn cleanup task
-                    let token_rx_clone = token_rx.clone();
-                    let request_id_cleanup = request_id.clone();
-                    let channel_key_cleanup = channel_key.clone();
-                    let streaming_registry = Arc::clone(pool.streaming_registry());
+                    info!(
+                        "📻 ENGINE: Retrieved streaming channel from registry - request_id={}",
+                        request_id
+                    );
 
+                    // Create cleanup signal channel (NOT cloning the token receiver!)
+                    let (cleanup_tx, cleanup_rx) = flume::bounded::<()>(1);
+                    let used_units_clone = Arc::clone(&used_units);
+                    let in_flight_clone = Arc::clone(&in_flight);
+                    let streaming_registry_clone = Arc::clone(pool.streaming_registry());
+                    let channel_key_cleanup = channel_key.clone();
+                    let request_id_cleanup = request_id.clone();
+
+                    // Spawn cleanup task that waits for signal from CleanupReceiver drop
                     tokio::spawn(async move {
-                        while let Ok(token_result) = token_rx_clone.recv_async().await {
-                            if let Ok(token) = token_result {
-                                if token.is_finished {
-                                    info!("🏁 ENGINE: Streaming complete, cleaning up - request_id={}", request_id_cleanup);
-                                    break;
-                                }
-                            }
-                        }
-                        // Release resources and cleanup channel
-                        used_units
-                            .fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
-                        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        streaming_registry.remove(&channel_key_cleanup);
                         info!(
-                            "♻️ ENGINE: Resources released and channel cleaned - request_id={}",
+                            "🧹 CLEANUP_TASK: Waiting for cleanup signal - request_id={}",
                             request_id_cleanup
+                        );
+
+                        // Wait for signal (sent when CleanupReceiver is dropped)
+                        let _ = cleanup_rx.recv_async().await;
+
+                        info!(
+                            "🏁 CLEANUP_TASK: Received cleanup signal, releasing resources - request_id={}",
+                            request_id_cleanup
+                        );
+
+                        // Release resources
+                        used_units_clone
+                            .fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
+                        in_flight_clone.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+
+                        // Remove channel from registry
+                        streaming_registry_clone.remove(&channel_key_cleanup);
+
+                        info!(
+                            "♻️ CLEANUP_TASK: Resources released and channel cleaned - request_id={}, units_freed={}",
+                            request_id_cleanup, cost_units_usize
                         );
                     });
 
+                    // Wrap the receiver with cleanup signal
+                    let wrapped_rx = CleanupReceiver::new(token_rx, cleanup_tx, request_id.clone());
+
                     info!(
-                        "🎊 ENGINE: Streaming request queued successfully - request_id={}",
+                        "🎊 ENGINE: Streaming request setup complete - request_id={}",
                         request_id
                     );
-                    Ok(token_rx)
+
+                    // Return the wrapped receiver (acts like normal receiver via Deref)
+                    Ok(wrapped_rx)
                 }
                 Ok(other) => {
                     error!(
@@ -707,21 +858,44 @@ impl LLMEngine {
 
             match result {
                 InferenceResult::Streaming { token_rx, .. } => {
-                    let token_rx_clone = token_rx.clone();
+                    info!(
+                        "📻 ENGINE: Got streaming channel from direct executor - request_id={}",
+                        request_id
+                    );
+
+                    // Create cleanup signal channel
+                    let (cleanup_tx, cleanup_rx) = flume::bounded::<()>(1);
+                    let used_units_clone = Arc::clone(&used_units);
+                    let in_flight_clone = Arc::clone(&in_flight);
+                    let request_id_cleanup = request_id.clone();
+
                     tokio::spawn(async move {
-                        while let Ok(token_result) = token_rx_clone.recv_async().await {
-                            if let Ok(token) = token_result {
-                                if token.is_finished {
-                                    break;
-                                }
-                            }
-                        }
-                        used_units
+                        info!(
+                            "🧹 CLEANUP_TASK: Waiting for cleanup signal (direct) - request_id={}",
+                            request_id_cleanup
+                        );
+
+                        let _ = cleanup_rx.recv_async().await;
+
+                        info!(
+                            "🏁 CLEANUP_TASK: Received cleanup signal, releasing resources (direct) - request_id={}",
+                            request_id_cleanup
+                        );
+
+                        used_units_clone
                             .fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
-                        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        in_flight_clone.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+
+                        info!(
+                            "♻️ CLEANUP_TASK: Resources released (direct) - request_id={}",
+                            request_id_cleanup
+                        );
                     });
 
-                    Ok(token_rx)
+                    // Wrap the receiver
+                    let wrapped_rx = CleanupReceiver::new(token_rx, cleanup_tx, request_id.clone());
+
+                    Ok(wrapped_rx)
                 }
                 InferenceResult::Error { message } => {
                     self.used_units
@@ -942,7 +1116,7 @@ impl LLMEngine {
             created,
             model: self.model_name.clone(),
             object: "chat.completion.chunk",
-            system_fingerprint: None,
+            system_fingerprint: Some(self.config.system_fingerprint()),
             conversation_id,
             resource_id,
         }
@@ -960,5 +1134,30 @@ impl LLMEngine {
     /// Legacy method stub for scheduler step processing.
     pub fn process_scheduler_step(&mut self) -> Result<usize> {
         Ok(0)
+    }
+
+    /// Get cached token count for a request.
+    pub fn get_cached_tokens(&self, request_id: &str) -> Option<usize> {
+        self.cached_tokens.read().get(request_id).copied()
+    }
+
+    /// Update usage response with cached token information.
+    pub fn update_usage_with_cache(
+        &self,
+        usage: &mut ChatCompletionUsageResponse,
+        request_id: &str,
+    ) {
+        if let Some(cached_count) = self.get_cached_tokens(request_id) {
+            if cached_count > 0 {
+                usage.prompt_tokens_details = Some(PromptTokensDetails {
+                    cached_tokens: Some(cached_count),
+                });
+            }
+        }
+    }
+
+    /// Clean up cached token tracking for a completed request.
+    pub fn cleanup_cached_tokens(&self, request_id: &str) {
+        self.cached_tokens.write().remove(request_id);
     }
 }
