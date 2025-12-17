@@ -79,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           kubectl config current-context || true
-          kubectl version --client --short
+          kubectl version --client
           kubectl cluster-info
           kubectl get ns candle
 
