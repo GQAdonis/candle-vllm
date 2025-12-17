@@ -167,14 +167,14 @@ resource "kubernetes_deployment_v1" "app" {
 
           resources {
             requests = {
-              cpu               = var.cpu_request
-              memory            = var.memory_request
-              "nvidia.com/gpu"  = tostring(var.gpu_count)
+              cpu              = var.cpu_request
+              memory           = var.memory_request
+              "nvidia.com/gpu" = tostring(var.gpu_count)
             }
             limits = {
-              cpu               = var.cpu_limit
-              memory            = var.memory_limit
-              "nvidia.com/gpu"  = tostring(var.gpu_count)
+              cpu              = var.cpu_limit
+              memory           = var.memory_limit
+              "nvidia.com/gpu" = tostring(var.gpu_count)
             }
           }
 
@@ -318,12 +318,12 @@ resource "kubernetes_ingress_v1" "ing" {
     namespace = var.namespace
     labels    = local.labels
     annotations = {
-      "nginx.ingress.kubernetes.io/ssl-redirect"             = "true"
-      "nginx.ingress.kubernetes.io/force-ssl-redirect"       = "true"
-      "nginx.ingress.kubernetes.io/proxy-buffering"          = "off"
-      "nginx.ingress.kubernetes.io/proxy-request-buffering"  = "off"
-      "nginx.ingress.kubernetes.io/proxy-read-timeout"       = "3600"
-      "nginx.ingress.kubernetes.io/proxy-send-timeout"       = "3600"
+      "nginx.ingress.kubernetes.io/ssl-redirect"            = "true"
+      "nginx.ingress.kubernetes.io/force-ssl-redirect"      = "true"
+      "nginx.ingress.kubernetes.io/proxy-buffering"         = "off"
+      "nginx.ingress.kubernetes.io/proxy-request-buffering" = "off"
+      "nginx.ingress.kubernetes.io/proxy-read-timeout"      = "3600"
+      "nginx.ingress.kubernetes.io/proxy-send-timeout"      = "3600"
     }
   }
 
@@ -363,12 +363,12 @@ resource "kubernetes_ingress_v1" "web" {
     namespace = var.namespace
     labels    = local.labels
     annotations = {
-      "nginx.ingress.kubernetes.io/ssl-redirect"             = "true"
-      "nginx.ingress.kubernetes.io/force-ssl-redirect"       = "true"
-      "nginx.ingress.kubernetes.io/proxy-buffering"          = "off"
-      "nginx.ingress.kubernetes.io/proxy-request-buffering"  = "off"
-      "nginx.ingress.kubernetes.io/proxy-read-timeout"       = "3600"
-      "nginx.ingress.kubernetes.io/proxy-send-timeout"       = "3600"
+      "nginx.ingress.kubernetes.io/ssl-redirect"            = "true"
+      "nginx.ingress.kubernetes.io/force-ssl-redirect"      = "true"
+      "nginx.ingress.kubernetes.io/proxy-buffering"         = "off"
+      "nginx.ingress.kubernetes.io/proxy-request-buffering" = "off"
+      "nginx.ingress.kubernetes.io/proxy-read-timeout"      = "3600"
+      "nginx.ingress.kubernetes.io/proxy-send-timeout"      = "3600"
     }
   }
 
