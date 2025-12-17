@@ -1,9 +1,10 @@
 use super::{requests::StopTokens, responses::APIError};
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 const SAMPLING_EPS: f32 = 1e-5;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 // Top-n logprobs element
 pub struct TopLogprob {
     pub token: u32,
@@ -11,7 +12,7 @@ pub struct TopLogprob {
     pub bytes: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct Logprobs {
     pub token: u32,
     pub logprob: f32,
@@ -19,7 +20,7 @@ pub struct Logprobs {
     pub top_logprobs: Vec<TopLogprob>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub enum EarlyStoppingCondition {
     ///True
     BestOfCompleteCandidates,
@@ -36,7 +37,7 @@ pub enum SamplingType {
     RANDOM,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct SamplingParams {
     /// Number of output seqs to return for a prompt.
     pub n: usize,

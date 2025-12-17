@@ -735,7 +735,7 @@ impl Messages {
 // Stop Tokens
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
 #[serde(untagged)]
 pub enum StopTokens {
     Multi(Vec<String>),
