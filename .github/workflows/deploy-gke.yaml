@@ -59,33 +59,10 @@ jobs:
         with:
           tofu_version: "1.8.6"
 
-      # Most GKE kubeconfigs rely on the GKE auth exec plugin. The plugin still needs
-      # Google credentials available on the runner, so we authenticate with a GCP service
-      # account JSON key.
-      #
-      # Required secret: `GCP_SA_KEY_JSON`.
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY_JSON }}
-
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          version: ">= 470.0.0"
-          install_components: "gke-gcloud-auth-plugin"
-
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: "v1.30.0"
-
-      - name: Verify gke-gcloud-auth-plugin
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v gke-gcloud-auth-plugin
-          gke-gcloud-auth-plugin --version
 
       - name: Write kubeconfig
         shell: bash
@@ -97,6 +74,43 @@ jobs:
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
 
+      - name: Detect kubeconfig auth mode
+        id: kubeauth
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q "gke-gcloud-auth-plugin" "$HOME/.kube/config" || grep -qE "^[[:space:]]*exec:" "$HOME/.kube/config"; then
+            echo "needs_gke_plugin=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_gke_plugin=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # If the kubeconfig uses the GKE auth exec plugin, it still needs Google
+      # credentials available on the runner, so we authenticate with a GCP service
+      # account JSON key and install the plugin via gcloud.
+      #
+      # Required secret (only when exec auth is used): `GCP_SA_KEY_JSON`.
+      - name: Authenticate to Google Cloud
+        if: steps.kubeauth.outputs.needs_gke_plugin == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_JSON }}
+
+      - name: Set up gcloud (and gke auth plugin)
+        if: steps.kubeauth.outputs.needs_gke_plugin == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          version: ">= 470.0.0"
+          install_components: "gke-gcloud-auth-plugin"
+
+      - name: Verify gke-gcloud-auth-plugin
+        if: steps.kubeauth.outputs.needs_gke_plugin == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v gke-gcloud-auth-plugin
+          gke-gcloud-auth-plugin --version
+
       - name: Verify kube access
         shell: bash
         run: |
@@ -105,6 +119,14 @@ jobs:
           kubectl version --client
           kubectl cluster-info
           kubectl get ns candle
+          echo "--- RBAC preflight (candle namespace) ---"
+          kubectl auth can-i get pods -n candle
+          kubectl auth can-i create deployments -n candle
+          kubectl auth can-i create services -n candle
+          kubectl auth can-i create ingresses -n candle
+          kubectl auth can-i create configmaps -n candle
+          kubectl auth can-i create secrets -n candle
+          kubectl auth can-i update secrets -n candle
 
       - name: OpenTofu init
         shell: bash
