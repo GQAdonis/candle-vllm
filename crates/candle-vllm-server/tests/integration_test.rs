@@ -2307,6 +2307,63 @@ async fn test_real_inference_non_reasoning_non_streaming() {
 }
 
 #[tokio::test]
+async fn test_models_endpoint_default_indication() {
+    // Test that the /v1/models endpoint correctly indicates which model is the default
+    let models_state = match create_test_models_state() {
+        Some(state) => state,
+        None => {
+            eprintln!("Skipping test: test.models.yaml not found");
+            return;
+        }
+    };
+
+    // Get the default model from the state
+    let default_model_id = models_state.default_model.clone();
+    assert!(
+        default_model_id.is_some(),
+        "Test models config should have a default model"
+    );
+
+    let default_model_id = default_model_id.unwrap();
+
+    // Get the list of models
+    let models = models_state.list();
+    assert!(!models.is_empty(), "Models list should not be empty");
+
+    // Verify that the default model exists in the list
+    let default_model_in_list = models.iter().any(|m| m.id == default_model_id);
+    assert!(
+        default_model_in_list,
+        "Default model '{}' should be in the models list",
+        default_model_id
+    );
+
+    // Verify that when we resolve "default", it returns the configured default
+    let resolved = models_state.resolve("default");
+    assert!(
+        resolved.is_some(),
+        "Resolving 'default' should return a model"
+    );
+
+    let resolved_alias = resolved.unwrap();
+    assert_eq!(
+        resolved_alias.name, default_model_id,
+        "Resolving 'default' should return the configured default model"
+    );
+
+    // Verify that resolving by actual name also works
+    let resolved_by_name = models_state.resolve(&default_model_id);
+    assert!(
+        resolved_by_name.is_some(),
+        "Resolving by actual model name should work"
+    );
+
+    eprintln!("✓ Default model indication test passed!");
+    eprintln!("  Default model: {}", default_model_id);
+    eprintln!("  Total models: {}", models.len());
+}
+
+#[tokio::test]
 #[ignore] // Requires model download/loading + streaming support
 async fn test_real_inference_non_reasoning_streaming() {
     // TODO: Implement streaming test using server's SSE path

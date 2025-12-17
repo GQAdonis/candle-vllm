@@ -129,6 +129,9 @@ mod tests {
                 backend: "postgres".to_string(),
                 retention_secs: 1800,
                 postgres_url: Some("postgresql://example".to_string()),
+                sqlite_path: None,
+                surreal_path: None,
+                webhook: None,
             },
         };
 
@@ -152,6 +155,9 @@ mod tests {
                 backend: "memory".to_string(),
                 retention_secs: 900,
                 postgres_url: None,
+                sqlite_path: None,
+                surreal_path: None,
+                webhook: None,
             },
             ..global.clone()
         };

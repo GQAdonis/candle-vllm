@@ -335,23 +335,44 @@ pub fn build_router(state: AppState) -> Router {
 
 async fn models_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     let created = get_created_time_secs();
-    let data: Vec<_> = state
+    let default_model_id = state.models.default_model.clone();
+
+    let mut data: Vec<_> = state
         .models
         .list()
         .into_iter()
         .map(|m| {
+            let is_default = default_model_id
+                .as_ref()
+                .map_or(false, |default| default == &m.id);
             json!({
                 "id": m.id,
                 "object": m.object,
                 "created": created,
                 "owned_by": m.owned_by,
-                "permission": []
+                "permission": [],
+                "default": is_default
             })
         })
         .collect();
+
+    // Sort so that the default model appears first in the list
+    if let Some(ref default_id) = default_model_id {
+        data.sort_by(|a, b| {
+            let a_is_default = a.get("id").and_then(|v| v.as_str()) == Some(default_id.as_str());
+            let b_is_default = b.get("id").and_then(|v| v.as_str()) == Some(default_id.as_str());
+            match (a_is_default, b_is_default) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            }
+        });
+    }
+
     Json(json!({
         "object": "list",
-        "data": data
+        "data": data,
+        "default": default_model_id
     }))
 }
 

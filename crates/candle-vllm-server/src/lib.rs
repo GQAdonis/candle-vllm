@@ -828,6 +828,8 @@ pub async fn run() -> Result<()> {
     let mut port = args.port;
     let ui_server = args.ui_server;
     let ui_port = args.port;
+
+    // Load model with proper cfg-gated code to avoid cross-cfg type checking issues
     #[cfg(feature = "nccl")]
     let (pipelines, global_rank, daemon_manager) = if multi_process {
         use candle_vllm_core::openai::communicator::init_subprocess;
@@ -880,11 +882,11 @@ pub async fn run() -> Result<()> {
                     args.block_size,
                     args.max_num_seqs,
                     device_ids,
-                    None,
-                    Some(0),
-                    Some(1),
-                    None,
-                    None,
+                    None,                   // comm_id (None for multithread)
+                    Some(0),                // local_rank
+                    Some(device_ids.len()), // local_world_size
+                    Some(0),                // global_rank
+                    Some(device_ids.len()), // global_world_size
                 )
                 .await,
             0,
@@ -906,6 +908,7 @@ pub async fn run() -> Result<()> {
     let (pipelines, global_rank) = {
         let log_file = "candle-vllm.log".to_string();
         let _ = config_log(logger, args.log, log_file);
+        let device_ids_len = device_ids.len();
         (
             loader
                 .load_model(
@@ -917,8 +920,8 @@ pub async fn run() -> Result<()> {
                     args.block_size,
                     args.max_num_seqs,
                     device_ids,
-                    None,
-                    Some(0),
+                    None,                 // local_rank
+                    Some(device_ids_len), // local_world_size
                 )
                 .await,
             0,
@@ -1067,6 +1070,7 @@ pub async fn run() -> Result<()> {
     };
 
     // Create the inference engine with resource-aware scheduling
+    #[cfg(feature = "nccl")]
     let llm_engine = LLMEngine::new_with_cache(
         pipelines,
         SchedulerConfig {
@@ -1077,8 +1081,20 @@ pub async fn run() -> Result<()> {
         Arc::new(Notify::new()),
         Some(scheduler_pool_config),
         prompt_cache,
-        #[cfg(feature = "nccl")]
         daemon_manager,
+    )?;
+
+    #[cfg(not(feature = "nccl"))]
+    let llm_engine = LLMEngine::new_with_cache(
+        pipelines,
+        SchedulerConfig {
+            max_num_seqs: args.max_num_seqs,
+        },
+        &cache_config,
+        &config,
+        Arc::new(Notify::new()),
+        Some(scheduler_pool_config),
+        prompt_cache,
     )?;
 
     info!(

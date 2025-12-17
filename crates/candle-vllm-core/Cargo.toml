@@ -58,6 +58,7 @@ sha2 = "0.10"
 shellexpand = "3.1"
 sled = { version = "0.34", optional = true }
 redis = { version = "0.24", optional = true, features = ["tokio-comp", "connection-manager"] }
+tqdm = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -81,7 +82,7 @@ flash-decoding = ["attention-rs/flash-decoding"]
 mkl = ["candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
 mpi = ["candle-core/nccl", "dep:mpi"]
-graph = ["attention-rs/graph", "candle-core/graph"]
+graph = ["attention-rs/graph", "candle-core/graph", "dep:tqdm"]
 prompt-cache = ["prompt-cache-sled", "prompt-cache-redis"]
 prompt-cache-sled = ["dep:sled"]
 prompt-cache-redis = ["dep:redis"]
