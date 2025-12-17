@@ -6,9 +6,10 @@ locals {
     "app.kubernetes.io/component" = "server"
   }
 
-  node_selector = {
-    "cloud.google.com/gke-nodepool" = var.gpu_nodepool
-  }
+  node_selector = merge(
+    var.gpu_nodepool != "" ? { "cloud.google.com/gke-nodepool" = var.gpu_nodepool } : {},
+    var.gpu_accelerator != "" ? { "cloud.google.com/gke-accelerator" = var.gpu_accelerator } : {},
+  )
 
   web_tls_secret_name = var.web_tls_secret_name != "" ? var.web_tls_secret_name : var.tls_secret_name
 }
@@ -89,6 +90,10 @@ resource "kubernetes_deployment_v1" "app" {
     labels    = local.labels
   }
 
+  # Don't block `tofu apply` on rollout completion (model download/load can take
+  # time and crashloops should be debugged via `kubectl logs`).
+  wait_for_rollout = false
+
   spec {
     replicas = var.replicas
 
@@ -108,6 +113,26 @@ resource "kubernetes_deployment_v1" "app" {
       spec {
         node_selector = local.node_selector
 
+        # Some clusters enforce scheduling constraints via admission policies that
+        # require `spec.template.spec.affinity.nodeAffinity` rather than (or in
+        # addition to) `nodeSelector`. Keep both, matching the GPU node pool.
+        affinity {
+          node_affinity {
+            required_during_scheduling_ignored_during_execution {
+              node_selector_term {
+                dynamic "match_expressions" {
+                  for_each = local.node_selector
+                  content {
+                    key      = match_expressions.key
+                    operator = "In"
+                    values   = [match_expressions.value]
+                  }
+                }
+              }
+            }
+          }
+        }
+
         toleration {
           key      = "nvidia.com/gpu"
           operator = "Exists"
@@ -118,6 +143,11 @@ resource "kubernetes_deployment_v1" "app" {
           name              = "candle-vllm"
           image             = var.container_image
           image_pull_policy = "Always"
+          # The base CUDA image uses NVIDIA's entrypoint script. If we only set
+          # `args`, Kubernetes will pass flags to that script and it will fail
+          # with `exec: --: invalid option`. Set `command` to run the server
+          # binary directly.
+          command = ["/usr/local/bin/candle-vllm"]
 
           args = concat([
             "--h",
@@ -135,6 +165,12 @@ resource "kubernetes_deployment_v1" "app" {
           env {
             name  = "RUST_LOG"
             value = "info"
+          }
+
+          # GKE mounts NVIDIA driver libraries at /usr/local/nvidia/lib64
+          env {
+            name  = "LD_LIBRARY_PATH"
+            value = "/usr/local/nvidia/lib64:/usr/lib/x86_64-linux-gnu"
           }
 
           env {
@@ -183,7 +219,7 @@ resource "kubernetes_deployment_v1" "app" {
               path = "/v1/models"
               port = var.service_port
             }
-            initial_delay_seconds = 10
+            initial_delay_seconds = 30
             period_seconds        = 10
             timeout_seconds       = 5
           }
@@ -193,9 +229,11 @@ resource "kubernetes_deployment_v1" "app" {
               path = "/v1/models"
               port = var.service_port
             }
-            initial_delay_seconds = 30
+            # Model download/load can take 2-5 minutes depending on network and model size
+            initial_delay_seconds = 300
             period_seconds        = 30
-            timeout_seconds       = 5
+            timeout_seconds       = 10
+            failure_threshold     = 5
           }
 
           volume_mount {

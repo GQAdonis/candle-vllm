@@ -1,0 +1,14 @@
+# Copy to `terraform.tfvars` (do not commit) and set your secrets.
+#
+# Required when `enable_mcp = true` (default):
+tavily_api_key = "tvly_REPLACE_ME"
+
+# Optional overrides:
+# container_image      = "tribehealth/candle-vllm:latest"
+# tls_secret_name      = "candle-tls"
+# web_tls_secret_name  = "" # defaults to tls_secret_name
+# ingress_class_name   = "nginx"
+# gpu_nodepool         = "ai-pool-gpu"
+# kvcache_mem_mb       = 2048
+# max_num_seqs         = 4
+# enable_ui_server     = true
