@@ -32,6 +32,7 @@ Required GitHub secrets:
 - `DOCKERHUB_TOKEN`
 - `KUBECONFIG_B64` (base64-encoded kubeconfig file content)
 - `TAVILY_API_KEY`
+- `GCP_SA_KEY_JSON` (service account JSON key used by `gke-gcloud-auth-plugin` in the kubeconfig)
 
 Optional secrets/vars (override defaults):
 - `CANDLE_VLLM_TLS_SECRET_NAME` (defaults to `candle-tls`)
