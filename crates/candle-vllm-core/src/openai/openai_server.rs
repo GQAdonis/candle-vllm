@@ -732,6 +732,7 @@ pub async fn chat_completions_with_data(
             Sse::new(Streamer {
                 rx,
                 status: StreamingStatus::Uninitialized,
+                sent_prelude: false,
             })
             .keep_alive(
                 KeepAlive::new()

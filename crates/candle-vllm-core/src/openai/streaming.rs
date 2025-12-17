@@ -25,6 +25,7 @@ pub enum ChatResponse {
 pub struct Streamer {
     pub rx: Receiver<ChatResponse>,
     pub status: StreamingStatus,
+    pub sent_prelude: bool,
 }
 
 impl Stream for Streamer {
@@ -33,6 +34,16 @@ impl Stream for Streamer {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.status == StreamingStatus::Stopped {
             return Poll::Ready(None);
+        }
+
+        // Some clients and reverse proxies aggressively buffer until a minimum number of bytes
+        // have been written. Send a one-time padded SSE comment to encourage early flush and
+        // make streaming feel "real time" even for very small chunks.
+        if !self.sent_prelude {
+            self.sent_prelude = true;
+            const SSE_PRELUDE_BYTES: usize = 2048;
+            let padding: String = std::iter::repeat(' ').take(SSE_PRELUDE_BYTES).collect();
+            return Poll::Ready(Some(Ok(Event::default().comment(padding))));
         }
 
         let recv_result = self.rx.recv_async().poll_unpin(cx);
@@ -78,6 +89,7 @@ mod tests {
         let streamer = Streamer {
             rx,
             status: StreamingStatus::Uninitialized,
+            sent_prelude: true,
         };
 
         let handle = tokio::spawn(async move {

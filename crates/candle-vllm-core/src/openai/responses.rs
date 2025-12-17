@@ -413,7 +413,27 @@ pub enum ChatResponder {
 impl IntoResponse for ChatResponder {
     fn into_response(self) -> axum::response::Response {
         match self {
-            ChatResponder::Streamer(s) => s.into_response(),
+            ChatResponder::Streamer(s) => {
+                let mut response = s.into_response();
+                let headers = response.headers_mut();
+                headers.insert(
+                    http::header::CACHE_CONTROL,
+                    http::HeaderValue::from_static("no-cache, no-transform"),
+                );
+                headers.insert(
+                    http::header::PRAGMA,
+                    http::HeaderValue::from_static("no-cache"),
+                );
+                headers.insert(
+                    http::header::CONNECTION,
+                    http::HeaderValue::from_static("keep-alive"),
+                );
+                headers.insert(
+                    http::HeaderName::from_static("x-accel-buffering"),
+                    http::HeaderValue::from_static("no"),
+                );
+                response
+            }
             ChatResponder::Completion(s) => Json(s).into_response(),
             ChatResponder::InternalError(e) => {
                 JsonError::new(e.to_string()).to_response(http::StatusCode::INTERNAL_SERVER_ERROR)
