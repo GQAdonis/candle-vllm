@@ -8,8 +8,9 @@ services:
       dockerfile: Dockerfile
       args:
         # Override to customize build feature set.
-        # Example: WITH_FEATURES=cuda,cudnn,nccl,mpi
-        WITH_FEATURES: ${WITH_FEATURES:-cuda,cudnn,nccl,mpi}
+        # NOTE: NCCL feature has known compilation issues when combined with MPI (see DEFAULT_MODEL_FIX.md)
+        # Default: cuda,cudnn,mpi (without nccl). Example: WITH_FEATURES=cuda,cudnn,mpi
+        WITH_FEATURES: ${WITH_FEATURES:-cuda,cudnn,mpi}
     image: candle-vllm:local
     container_name: candle_vllm
     environment:

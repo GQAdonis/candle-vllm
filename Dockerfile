@@ -31,9 +31,11 @@ COPY . .
 
 # Rayon threads are limited to minimize memory requirements in CI, avoiding OOM
 # NOTE: Avoid nightly-only `-Z` flags in Docker builds.
+# NOTE: NCCL feature has known compilation issues when combined with MPI (see DEFAULT_MODEL_FIX.md)
+# Use cuda,cudnn,mpi (without nccl) as default. Override WITH_FEATURES if nccl is needed.
 ARG CUDA_COMPUTE_CAP=80
 ARG RAYON_NUM_THREADS=4
-ARG WITH_FEATURES="cuda,cudnn,nccl,mpi"
+ARG WITH_FEATURES="cuda,cudnn,mpi"
 ENV CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
     RAYON_NUM_THREADS="${RAYON_NUM_THREADS}"
 RUN cargo build --release --workspace --locked --features "${WITH_FEATURES}"
