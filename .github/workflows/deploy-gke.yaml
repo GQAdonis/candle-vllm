@@ -59,10 +59,33 @@ jobs:
         with:
           tofu_version: "1.8.6"
 
+      # Most GKE kubeconfigs rely on the GKE auth exec plugin. The plugin still needs
+      # Google credentials available on the runner, so we authenticate with a GCP service
+      # account JSON key.
+      #
+      # Required secret: `GCP_SA_KEY_JSON`.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_JSON }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          version: ">= 470.0.0"
+          install_components: "gke-gcloud-auth-plugin"
+
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: "v1.30.0"
+
+      - name: Verify gke-gcloud-auth-plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v gke-gcloud-auth-plugin
+          gke-gcloud-auth-plugin --version
 
       - name: Write kubeconfig
         shell: bash
