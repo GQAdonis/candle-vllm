@@ -68,8 +68,8 @@ resource "kubernetes_secret_v1" "mcp" {
 
   type = "Opaque"
 
-  string_data = {
-    "mcp.json" = jsonencode({
+  data = {
+    "mcp.json" = base64encode(jsonencode({
       servers = [
         {
           name         = "tavily-mcp"
@@ -78,7 +78,7 @@ resource "kubernetes_secret_v1" "mcp" {
           instructions = "Web search and retrieval via Tavily."
         },
       ]
-    })
+    }))
   }
 }
 
@@ -318,6 +318,8 @@ resource "kubernetes_ingress_v1" "ing" {
     namespace = var.namespace
     labels    = local.labels
     annotations = {
+      "nginx.ingress.kubernetes.io/ssl-redirect"             = "true"
+      "nginx.ingress.kubernetes.io/force-ssl-redirect"       = "true"
       "nginx.ingress.kubernetes.io/proxy-buffering"          = "off"
       "nginx.ingress.kubernetes.io/proxy-request-buffering"  = "off"
       "nginx.ingress.kubernetes.io/proxy-read-timeout"       = "3600"
@@ -361,6 +363,8 @@ resource "kubernetes_ingress_v1" "web" {
     namespace = var.namespace
     labels    = local.labels
     annotations = {
+      "nginx.ingress.kubernetes.io/ssl-redirect"             = "true"
+      "nginx.ingress.kubernetes.io/force-ssl-redirect"       = "true"
       "nginx.ingress.kubernetes.io/proxy-buffering"          = "off"
       "nginx.ingress.kubernetes.io/proxy-request-buffering"  = "off"
       "nginx.ingress.kubernetes.io/proxy-read-timeout"       = "3600"
