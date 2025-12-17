@@ -197,6 +197,12 @@ pub struct LLMEngine {
 }
 
 impl LLMEngine {
+    /// Get worker-pool stats if the parking-lot pool is enabled.
+    #[must_use]
+    pub fn worker_pool_stats(&self) -> Option<crate::parking_lot::PoolStats> {
+        self.worker_pool.as_ref().map(|p| p.stats())
+    }
+
     /// Initialize a new `LLMEngine` with the parking-lot scheduler.
     ///
     /// Unlike the original LLMEngine, this version uses a single executor
@@ -476,7 +482,9 @@ impl LLMEngine {
                     request_id, cached_count
                 );
                 // Store cached token count for usage reporting
-                self.cached_tokens.write().insert(request_id.clone(), cached_count);
+                self.cached_tokens
+                    .write()
+                    .insert(request_id.clone(), cached_count);
                 cached_count
             } else {
                 0
@@ -683,7 +691,9 @@ impl LLMEngine {
                     request_id, cached_count
                 );
                 // Store cached token count for usage reporting
-                self.cached_tokens.write().insert(request_id.clone(), cached_count);
+                self.cached_tokens
+                    .write()
+                    .insert(request_id.clone(), cached_count);
                 cached_count
             } else {
                 0

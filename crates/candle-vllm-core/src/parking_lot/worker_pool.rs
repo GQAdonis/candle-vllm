@@ -175,10 +175,32 @@ impl InferenceWorkerPool {
             "🎫 WORKER_POOL: Job queued - request_id={}, key={:?}",
             request_id, key
         );
+        let stats_after_enqueue = self.pool.stats();
+        info!(
+            event = "worker_pool_enqueued",
+            request_id = %request_id,
+            active_tasks = stats_after_enqueue.active_tasks,
+            queued_tasks = stats_after_enqueue.queued_tasks,
+            completed_tasks = stats_after_enqueue.completed_tasks,
+            failed_tasks = stats_after_enqueue.failed_tasks,
+            submitted_tasks = stats_after_enqueue.submitted_tasks,
+            used_units = stats_after_enqueue.used_units,
+            total_units = stats_after_enqueue.total_units
+        );
 
-        // Retrieve result with timeout
+        // Retrieve result with timeout.
+        //
+        // IMPORTANT: Prefer the pool's blocking `retrieve` wrapped in `spawn_blocking`.
+        // The upstream `retrieve_async` implementation uses `tokio::time::timeout` around an
+        // internal `spawn_blocking` wait on a Condvar. If the timeout triggers, the inner
+        // blocking wait is not cancelled and can leak blocking threads, eventually stalling
+        // the runtime and causing "stuck waiting for completion" symptoms.
         let timeout = Duration::from_secs(self.config.timeout_secs);
-        let result = self.pool.retrieve_async(&key, timeout).await?;
+        let pool = Arc::clone(&self.pool);
+        let key_for_retrieve = key.clone();
+        let result = tokio::task::spawn_blocking(move || pool.retrieve(&key_for_retrieve, timeout))
+            .await
+            .map_err(|e| PoolError::Internal(format!("result retrieval task panicked: {e:?}")))??;
 
         info!(
             "✅ WORKER_POOL: Job result retrieved - request_id={}, type={:?}",
@@ -188,6 +210,18 @@ impl InferenceWorkerPool {
                 InferenceResult::Streaming { .. } => "Streaming",
                 InferenceResult::Error { .. } => "Error",
             }
+        );
+        let stats_after_retrieve = self.pool.stats();
+        info!(
+            event = "worker_pool_retrieved",
+            request_id = %request_id,
+            active_tasks = stats_after_retrieve.active_tasks,
+            queued_tasks = stats_after_retrieve.queued_tasks,
+            completed_tasks = stats_after_retrieve.completed_tasks,
+            failed_tasks = stats_after_retrieve.failed_tasks,
+            submitted_tasks = stats_after_retrieve.submitted_tasks,
+            used_units = stats_after_retrieve.used_units,
+            total_units = stats_after_retrieve.total_units
         );
 
         // Convert to serializable form

@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 #[derive(Debug)]
 pub struct ModelSwitchRequest {
@@ -62,7 +63,16 @@ impl ModelManager {
         let mut queues = self.request_queues.lock();
         queues
             .entry(model.to_string())
-            .or_insert_with(|| Arc::new(RequestQueue::new(self.queue_size, self.request_timeout)))
+            .or_insert_with(|| {
+                info!(
+                    event = "model_queue_created",
+                    model = %model,
+                    queue_size = self.queue_size,
+                    timeout_ms = self.request_timeout.as_millis() as u64,
+                    "Created per-model request queue"
+                );
+                Arc::new(RequestQueue::new(self.queue_size, self.request_timeout))
+            })
             .clone()
     }
 
@@ -111,6 +121,13 @@ impl ModelManager {
             model: model.to_string(),
             requested_at: Instant::now(),
         });
+        info!(
+            event = "model_switch_enqueued",
+            model = %model,
+            switch_queue_len = guard.queue.len(),
+            status = ?guard.status,
+            "Model switch enqueued"
+        );
         if guard.status == ModelLifecycleStatus::Idle || guard.status == ModelLifecycleStatus::Ready
         {
             guard.status = ModelLifecycleStatus::Switching;
@@ -128,6 +145,12 @@ impl ModelManager {
         if let Some(req) = guard.queue.pop_front() {
             guard.status = ModelLifecycleStatus::Loading;
             guard.switch_requested_at = Some(Instant::now());
+            info!(
+                event = "model_switch_begin",
+                model = %req.model,
+                remaining = guard.queue.len(),
+                "Beginning model switch"
+            );
             return Some(req);
         }
         None
@@ -142,6 +165,11 @@ impl ModelManager {
             guard.last_error = None;
             guard.switch_requested_at = None;
         }
+        info!(
+            event = "model_switch_complete",
+            model = %model,
+            "Model switch completed"
+        );
         self.models_state.set_active(model.clone()).await;
 
         // Drain queued requests for this model
@@ -151,6 +179,12 @@ impl ModelManager {
     /// Mark switch failure.
     pub fn fail_switch(&self, err: String) {
         let mut guard = self.inner.lock();
+        warn!(
+            event = "model_switch_failed",
+            error = %err,
+            status = ?guard.status,
+            "Model switch failed"
+        );
         guard.last_error = Some(err);
         guard.status = ModelLifecycleStatus::Error;
         guard.switch_requested_at = None;

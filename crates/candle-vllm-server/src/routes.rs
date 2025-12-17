@@ -120,8 +120,12 @@ async fn chat_completions_handler(
                     let queue = manager.get_or_create_queue(&alias.name);
                     let (response_tx, response_rx) = oneshot::channel();
 
-                    let queued_request =
-                        QueuedRequest::new(alias.name.clone(), req.clone(), Some(response_tx));
+                    let queued_request = QueuedRequest::new(
+                        request_id.clone(),
+                        alias.name.clone(),
+                        req.clone(),
+                        Some(response_tx),
+                    );
 
                     match queue.enqueue(queued_request) {
                         Ok(()) => {

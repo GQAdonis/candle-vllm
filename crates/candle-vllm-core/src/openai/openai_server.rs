@@ -13,7 +13,7 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 #[utoipa::path(
@@ -238,9 +238,15 @@ fn check_length(
         "🔢 CHAT: tokenization complete"
     );
 
-    let max_gen_tokens = request
-        .max_tokens
-        .unwrap_or(data.pipeline_config.default_max_tokens);
+    // Avoid "generate up to the full KV budget" when clients omit `max_tokens`.
+    // The pipeline default can be large (e.g. derived from `max_seq_len / 5`), so cap
+    // the implicit default to keep interactive requests responsive.
+    const DEFAULT_MAX_TOKENS_WHEN_UNSPECIFIED: usize = 512;
+    let default_max_tokens = std::cmp::min(
+        data.pipeline_config.default_max_tokens,
+        DEFAULT_MAX_TOKENS_WHEN_UNSPECIFIED,
+    );
+    let max_gen_tokens = request.max_tokens.unwrap_or(default_max_tokens);
 
     if token_ids.len() >= data.pipeline_config.max_model_len {
         Err(APIError::new(format!(
@@ -332,6 +338,23 @@ pub async fn chat_completions_with_data(
     );
 
     let max_request_tokens = available_tokens;
+    const DEFAULT_MAX_TOKENS_WHEN_UNSPECIFIED: usize = 512;
+    let default_max_tokens = std::cmp::min(
+        data.pipeline_config.default_max_tokens,
+        DEFAULT_MAX_TOKENS_WHEN_UNSPECIFIED,
+    );
+    let requested_max_tokens = request.max_tokens.unwrap_or(default_max_tokens);
+    let max_tokens = std::cmp::min(requested_max_tokens, max_request_tokens);
+    if request.max_tokens.is_none() {
+        debug!(
+            event = "chat_max_tokens_defaulted",
+            %request_id,
+            pipeline_default_max_tokens = data.pipeline_config.default_max_tokens,
+            defaulted_max_tokens = default_max_tokens,
+            max_request_tokens,
+            "Request omitted max_tokens; using capped default"
+        );
+    }
 
     // Convert logprobs from Option<bool> to Option<usize>
     let logprobs_count: Option<usize> = request.logprobs.and_then(|enabled| {
@@ -365,7 +388,7 @@ pub async fn chat_completions_with_data(
             .map(|id| id as usize)
             .collect(),
         request.ignore_eos.unwrap_or(false),
-        max_request_tokens,
+        max_tokens,
         logprobs_count,
         None, // prompt_logprobs
         request.skip_special_tokens.unwrap_or(true),

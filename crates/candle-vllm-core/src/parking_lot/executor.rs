@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
 use std::sync::Arc;
+use std::{panic, panic::AssertUnwindSafe};
 use tracing::{debug, error, info, warn};
 
 use super::job::{InferenceJob, InferenceResult, StreamingTokenResult};
@@ -302,8 +303,19 @@ impl LlmExecutor {
 
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true,
-                        slot_mapping: Tensor::zeros(seq_len, DType::I64, device)
-                            .expect("slot_mapping tensor creation failed"),
+                        slot_mapping: match Tensor::zeros(seq_len, DType::I64, device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!(
+                                    rank = self.rank,
+                                    request_id = %job.request_id,
+                                    step = step,
+                                    error = %e,
+                                    "Failed to create slot_mapping tensor"
+                                );
+                                return InferenceResult::error(e.to_string());
+                            }
+                        },
                         block_tables: None,
                         context_lens: None,
                         cu_seqlens_q: Some(cu_seqlens.clone()),
@@ -636,8 +648,13 @@ impl LlmExecutor {
 
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true,
-                        slot_mapping: Tensor::zeros(seq_len, DType::I64, device)
-                            .expect("slot_mapping tensor creation failed"),
+                        slot_mapping: match Tensor::zeros(seq_len, DType::I64, device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let _ = token_tx.send(Err(e.to_string()));
+                                return;
+                            }
+                        },
                         block_tables: None,
                         context_lens: None,
                         cu_seqlens_q: Some(cu_seqlens.clone()),
@@ -739,19 +756,37 @@ impl LlmExecutor {
             payload.is_streaming
         );
 
-        let result = if payload.is_streaming {
-            info!(
-                "📡 EXECUTOR: Processing STREAMING job - request_id={}",
-                payload.request_id
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            if payload.is_streaming {
+                info!(
+                    "📡 EXECUTOR: Processing STREAMING job - request_id={}",
+                    payload.request_id
+                );
+                self.process_streaming(&payload)
+            } else {
+                info!(
+                    "📝 EXECUTOR: Processing COMPLETION job - request_id={}",
+                    payload.request_id
+                );
+                self.process_completion(&payload)
+            }
+        }))
+        .unwrap_or_else(|panic_payload| {
+            let panic_msg = match panic_payload.downcast_ref::<&'static str>() {
+                Some(s) => (*s).to_string(),
+                None => match panic_payload.downcast_ref::<String>() {
+                    Some(s) => s.clone(),
+                    None => "unknown panic payload".to_string(),
+                },
+            };
+            error!(
+                rank = self.rank,
+                request_id = %payload.request_id,
+                panic = %panic_msg,
+                "Inference task panicked"
             );
-            self.process_streaming(&payload)
-        } else {
-            info!(
-                "📝 EXECUTOR: Processing COMPLETION job - request_id={}",
-                payload.request_id
-            );
-            self.process_completion(&payload)
-        };
+            InferenceResult::error(format!("inference panicked: {panic_msg}"))
+        });
 
         info!(
             "✅ EXECUTOR: Job processing complete - rank={}, request_id={}, result_type={:?}",

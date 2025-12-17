@@ -26,7 +26,7 @@ use axum::http::{self, Method};
 use candle_core::{DType, Device, Result};
 #[cfg(feature = "nccl")]
 use candle_vllm_core::backend::heartbeat;
-use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
+use candle_vllm_core::openai::pipelines::pipeline::{DefaultLoader, DefaultPipeline};
 use candle_vllm_core::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use candle_vllm_core::openai::sampling_params::GenerationConfig;
 use candle_vllm_core::openai::OpenAIServerData;
@@ -47,6 +47,8 @@ use candle_vllm_core::openai::models::Config;
 use rustchatui::start_ui_server;
 use tokio::sync::Notify;
 use tower_http::cors::{Any, CorsLayer};
+use tracing::debug;
+use tracing_subscriber::EnvFilter;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -718,9 +720,9 @@ fn get_dtype(dtype: Option<String>) -> DType {
 pub async fn run() -> Result<()> {
     let mut args = Args::parse();
     if !args.log {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .init();
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     // Apply model alias before using args fields
@@ -787,9 +789,12 @@ pub async fn run() -> Result<()> {
         "Error: prefill_chunk_size must be divisible by 1024!"
     );
 
-    #[expect(
-        unused_variables,
-        reason = "multi_process is conditionally used behind feature flags (cuda, nccl)"
+    #[cfg_attr(
+        not(any(feature = "nccl", all(feature = "cuda", feature = "graph"))),
+        expect(
+            unused_variables,
+            reason = "multi_process is conditionally used behind feature flags (cuda, nccl)"
+        )
     )]
     let multi_process = if num_shards > 1 {
         if args.multithread {
@@ -869,7 +874,8 @@ pub async fn run() -> Result<()> {
     } else {
         use candle_vllm_core::openai::communicator::DaemonManager;
         DaemonManager::set_master_rank(true); //master rank default for multithreaded mode
-        let log_file = format!("candle-vllm-{}ranks.log", device_ids.len());
+        let device_ids_len = device_ids.len();
+        let log_file = format!("candle-vllm-{}ranks.log", device_ids_len);
         let _ = config_log(logger, args.log, log_file);
         (
             loader
@@ -882,11 +888,11 @@ pub async fn run() -> Result<()> {
                     args.block_size,
                     args.max_num_seqs,
                     device_ids,
-                    None,                   // comm_id (None for multithread)
-                    Some(0),                // local_rank
-                    Some(device_ids.len()), // local_world_size
-                    Some(0),                // global_rank
-                    Some(device_ids.len()), // global_world_size
+                    None,                 // comm_id (None for multithread)
+                    Some(0),              // local_rank
+                    Some(device_ids_len), // local_world_size
+                    Some(0),              // global_rank
+                    Some(device_ids_len), // global_world_size
                 )
                 .await,
             0,
@@ -928,42 +934,47 @@ pub async fn run() -> Result<()> {
         )
     };
 
-    let (default_pipelines, mut pipeline_config) = match pipelines {
-        Err(e) => panic!("{e:?}"),
-        Ok((p, c)) => (p, c),
-    };
+    let (default_pipelines, mut pipeline_config) = pipelines.map_err(|e| {
+        candle_core::Error::Msg(format!(
+            "Model load failed: {e}. If this is a CUDA OOM, try reducing `--mem`/`mem` in models.yaml or using a smaller model."
+        ))
+    })?;
     let mut config: Option<Config> = None;
     let mut cache_config: Option<CacheConfig> = None;
 
-    let pipelines: HashMap<_, _> = default_pipelines
-        .into_iter()
-        .map(|pipeline| {
-            let cfg = pipeline.get_model_config();
-            let cache_cfg = get_cache_config(
-                args.kvcache_mem_gpu,
-                args.kvcache_mem_cpu, //dummy 512MB for cpu
-                args.block_size,
-                &cfg,
-                kv_cache_dtype,
-                num_shards,
-            );
-            let cache_engine = CacheEngine::new(
-                &cfg,
-                &cache_cfg,
-                cache_cfg.dtype,
-                pipeline.device(),
-                num_shards,
-            )
-            .unwrap();
-            if config.is_none() {
-                config = Some(cfg.clone());
-            }
-            if cache_config.is_none() {
-                cache_config = Some(cache_cfg.clone());
-            }
-            (pipeline.rank(), (pipeline, cache_engine))
-        })
-        .collect();
+    let mut pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)> = HashMap::new();
+    for pipeline in default_pipelines {
+        let cfg = pipeline.get_model_config();
+        let cache_cfg = get_cache_config(
+            args.kvcache_mem_gpu,
+            args.kvcache_mem_cpu, // dummy CPU cache config
+            args.block_size,
+            &cfg,
+            kv_cache_dtype,
+            num_shards,
+        );
+        let cache_engine = CacheEngine::new(
+            &cfg,
+            &cache_cfg,
+            cache_cfg.dtype,
+            pipeline.device(),
+            num_shards,
+        )
+        .map_err(|e| {
+            candle_core::Error::Msg(format!(
+                "Failed to allocate KV cache (likely CUDA out-of-memory): {e}. \
+Try reducing `--mem`/`mem` in models.yaml, lowering `max_num_seqs`, closing other GPU workloads, \
+or switching to a smaller model."
+            ))
+        })?;
+        if config.is_none() {
+            config = Some(cfg.clone());
+        }
+        if cache_config.is_none() {
+            cache_config = Some(cache_cfg.clone());
+        }
+        pipelines.insert(pipeline.rank(), (pipeline, cache_engine));
+    }
 
     let cache_config = cache_config.as_ref().unwrap().clone();
     let config = config.as_ref().unwrap().clone();
@@ -1274,6 +1285,47 @@ pub async fn run() -> Result<()> {
         Duration::from_secs(args.request_timeout),
     ));
 
+    // Optional periodic diagnostics to distinguish "queue not serviced" vs "inference blocked".
+    // Enable with `CANDLE_VLLM_DIAG_INTERVAL_SECS=5` (or any positive integer).
+    if let Some(interval_secs) = std::env::var("CANDLE_VLLM_DIAG_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+    {
+        let model_manager = Arc::clone(&model_manager);
+        let engine = Arc::clone(&llm_engine);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
+            loop {
+                ticker.tick().await;
+                let status = model_manager.status();
+                debug!(
+                    event = "diag_model_manager_status",
+                    active_model = ?status.active_model,
+                    status = ?status.status,
+                    last_error = ?status.last_error,
+                    in_flight_requests = status.in_flight_requests,
+                    switch_requested_at_ms = ?status.switch_requested_at,
+                    queue_lengths = ?status.queue_lengths
+                );
+                if let Some(stats) = engine.worker_pool_stats() {
+                    debug!(
+                        event = "diag_worker_pool_stats",
+                        worker_threads = stats.worker_threads,
+                        active_tasks = stats.active_tasks,
+                        queued_tasks = stats.queued_tasks,
+                        completed_tasks = stats.completed_tasks,
+                        failed_tasks = stats.failed_tasks,
+                        used_units = stats.used_units,
+                        total_units = stats.total_units
+                    );
+                } else {
+                    debug!(event = "diag_worker_pool_stats", enabled = false);
+                }
+            }
+        });
+    }
+
     // If a model was loaded at startup, mark it as active in the ModelManager
     // This prevents requests from being queued unnecessarily when they arrive
     // Note: Any requests that arrive before this point will still be queued,
@@ -1295,7 +1347,7 @@ pub async fn run() -> Result<()> {
                     let data = Arc::clone(&server_data);
                     let mailbox = Arc::clone(&mailbox_service);
                     tokio::spawn(async move {
-                        let request_id = uuid::Uuid::new_v4().to_string();
+                        let request_id = queued.request_id.clone();
                         let responder =
                             candle_vllm_core::openai::openai_server::chat_completions_with_data(
                                 data,
