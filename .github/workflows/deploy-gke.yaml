@@ -66,6 +66,15 @@ jobs:
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
 
+      - name: Verify kube access
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl config current-context || true
+          kubectl version --client --short
+          kubectl cluster-info
+          kubectl get ns candle
+
       - name: OpenTofu init
         shell: bash
         run: |
@@ -85,3 +94,10 @@ jobs:
           CANDLE_VLLM_TLS_SECRET_NAME: ${{ secrets.CANDLE_VLLM_TLS_SECRET_NAME }}
           CANDLE_WEB_TLS_SECRET_NAME: ${{ secrets.CANDLE_WEB_TLS_SECRET_NAME }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+
+      - name: Verify deployed resources
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl get deploy,svc,ingress -n candle -o wide || true
