@@ -6,7 +6,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN <<HEREDOC
     apt-get update && \
     apt-get install -y --no-install-recommends \
+        ca-certificates \
         curl \
+        git \
         libssl-dev \
         pkg-config \
         clang \
@@ -17,29 +19,24 @@ RUN <<HEREDOC
     rm -rf /var/lib/apt/lists/*
 HEREDOC
 
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
+# Use the workspace-declared minimum Rust version (Rust 1.83+) instead of nightly.
+RUN curl https://sh.rustup.rs -sSf | bash -s -- -y --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup update nightly
-RUN rustup default nightly
-
-# MKL build dependencies
-RUN echo "deb [trusted=yes] https://apt.repos.intel.com/oneapi all main" | \
-    tee /etc/apt/sources.list.d/oneAPI.list \
-    && apt-get update \
-    && apt-get install -y libomp-dev intel-oneapi-mkl-devel
+RUN rustup toolchain install 1.83.0
+RUN rustup default 1.83.0
 
 WORKDIR /candle-vllm
 
 COPY . .
 
 # Rayon threads are limited to minimize memory requirements in CI, avoiding OOM
-# Rust threads are increased with a nightly feature for faster compilation (single-threaded by default)
+# NOTE: Avoid nightly-only `-Z` flags in Docker builds.
 ARG CUDA_COMPUTE_CAP=80
 ARG RAYON_NUM_THREADS=4
-ARG RUST_NUM_THREADS=4
-ARG RUSTFLAGS="-Z threads=${RUST_NUM_THREADS}"
-ARG WITH_FEATURES="cuda,cudnn,nccl,mkl,mpi"
-RUN cargo build --release --workspace --features "${WITH_FEATURES}"
+ARG WITH_FEATURES="cuda,cudnn,nccl,mpi"
+ENV CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
+    RAYON_NUM_THREADS="${RAYON_NUM_THREADS}"
+RUN cargo build --release --workspace --locked --features "${WITH_FEATURES}"
 
 FROM docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 AS base
 ENV HUGGINGFACE_HUB_CACHE=/data \
@@ -47,19 +44,13 @@ ENV HUGGINGFACE_HUB_CACHE=/data \
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-RUN echo "deb [trusted=yes] https://apt.repos.intel.com/oneapi all main" | \
-    tee /etc/apt/sources.list.d/oneAPI.list
-
 RUN <<HEREDOC
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        libomp-dev \
         ca-certificates \
-        libssl-dev \
         curl \
-        pkg-config \
         openmpi-bin \
-        intel-oneapi-hpc-toolkit && \
+        libssl3 && \
 
     rm -rf /var/lib/apt/lists/*
 HEREDOC
@@ -69,6 +60,13 @@ FROM base
 COPY --from=builder /candle-vllm/target/release/candle-vllm /usr/local/bin/candle-vllm
 RUN chmod +x /usr/local/bin/candle-vllm
 
-# Only the `devel` builder image provides symlinks, restore the `libnccl.so` symlink:
-RUN ln -s libnccl.so.2 /usr/lib/x86_64-linux-gnu/libnccl.so
+# Some runtime images may not include the `libnccl.so` linker symlink.
+# If NCCL is installed, restore it so `-lnccl` works at runtime.
+RUN if [ ! -e /usr/lib/x86_64-linux-gnu/libnccl.so ] && [ -e /usr/lib/x86_64-linux-gnu/libnccl.so.2 ]; then \
+    ln -s /usr/lib/x86_64-linux-gnu/libnccl.so.2 /usr/lib/x86_64-linux-gnu/libnccl.so; \
+    fi
 
+EXPOSE 80
+
+# Default to serving the OpenAI-compatible API on $PORT.
+CMD ["bash", "-lc", "exec /usr/local/bin/candle-vllm --h 0.0.0.0 --p ${PORT} --d 0"]

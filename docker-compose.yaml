@@ -1,6 +1,40 @@
-version: "3.9"
-
 services:
+  # CUDA service (Linux + NVIDIA GPU). On macOS, run natively with `--features metal`
+  # (Metal is not available inside Linux CUDA containers).
+  candle-vllm:
+    profiles: ["cuda"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Override to customize build feature set.
+        # Example: WITH_FEATURES=cuda,cudnn,nccl,mpi
+        WITH_FEATURES: ${WITH_FEATURES:-cuda,cudnn,nccl,mpi}
+    image: candle-vllm:local
+    container_name: candle_vllm
+    environment:
+      PORT: 2000
+      RUST_LOG: ${RUST_LOG:-info}
+      HUGGINGFACE_HUB_CACHE: /data
+      CANDLE_VLLM_MODELS_CONFIG: /config/models.yaml
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "2000:2000"
+    volumes:
+      - ${HOME}/.cache/huggingface:/data
+      - ${HOME}/.candle-vllm:/config:ro
+    runtime: nvidia
+    # NVIDIA Container Toolkit (compose v2+). If your Docker supports `device_requests`,
+    # this will make the GPU visible inside the container.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   postgres:
     image: ghcr.io/ruxwez/postgres:17
     container_name: candle_vllm_postgres

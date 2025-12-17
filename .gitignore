@@ -1,18 +1,25 @@
-/target
-.hf_token
-__pycache__
-*.ptx
-launch.json
-libpagedattention.a
-*.gz
-kernels/src/lib.rs
-*.log
-/Cargo.lock
-*.lock
-debug/
-release/
-*.rlib
-*.prof*
-.DS_Store
-Thumbs.db
-.env*
+# Local kubeconfig files (never commit)
+*.kubeconfig
+client-cluster.kubeconfig
+
+# gcloud auth plugin cache
+gke_gcloud_auth_plugin_cache
+
+# Terraform/OpenTofu local artifacts
+.terraform/
+.tofu/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Rust build artifacts
+target/
+
+# Workspace lockfile (do not commit unless explicitly desired)
+Cargo.lock
