@@ -5,3 +5,10 @@ extend-ignore-identifiers-re = [
     "cudaDevAttrMaxSharedMemoryPerBlockOptin",
     "setp",
 ]
+
+extend-ignore-words-re = [
+    # load-test tool name
+    "\\bwrk\\b",
+    # GitHub markdown anchor slug for "You're"
+    "\\byoure\\b",
+]

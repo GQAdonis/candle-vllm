@@ -1,6 +1,7 @@
 //! Integration tests for prompt caching with real inference.
 
 use candle_vllm_core::openai::openai_server::chat_completions_with_data;
+use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
 use candle_vllm_core::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use candle_vllm_core::openai::requests::{ChatCompletionRequest, ChatMessage};
 use candle_vllm_core::openai::OpenAIServerData;
@@ -8,7 +9,6 @@ use candle_vllm_core::openai::PipelineConfig;
 use candle_vllm_core::prompt_cache::{CacheBackend, PromptCacheConfig, PromptCacheManager};
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm_core::scheduler::SchedulerConfig;
-use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Once;
@@ -35,7 +35,7 @@ async fn create_test_server_data_with_cache(
 
     let models_config_path = get_test_env_var("CANDLE_VLLM_TEST_MODELS_CONFIG")
         .unwrap_or_else(|| "test.models.yaml".to_string());
-    
+
     if !std::path::Path::new(&models_config_path).exists() {
         eprintln!("Skipping test: {} not found", models_config_path);
         return None;
@@ -50,16 +50,12 @@ async fn create_test_server_data_with_cache(
     };
 
     let model_profile = config.models.iter().find(|m| m.name == model_name)?;
-    
+
     let hf_token = get_test_env_var("HF_TOKEN");
     let model_id = model_profile.hf_id.clone();
     let weight_path = model_profile.local_path.clone();
     let weight_file = None; // DefaultLoader expects Option<String> for weight_file
-    let loader = DefaultLoader::new(
-        model_id,
-        weight_path,
-        weight_file,
-    );
+    let loader = DefaultLoader::new(model_id, weight_path, weight_file);
 
     // Set HF_TOKEN env var if we have a token
     if let Some(ref token) = hf_token {
@@ -120,7 +116,13 @@ async fn create_test_server_data_with_cache(
     let mut config: Option<candle_vllm_core::openai::models::Config> = None;
     let mut cache_config: Option<CacheConfig> = None;
 
-    let pipelines_with_cache: HashMap<usize, (Box<candle_vllm_core::openai::pipelines::pipeline::DefaultPipeline>, CacheEngine)> = pipelines
+    let pipelines_with_cache: HashMap<
+        usize,
+        (
+            Box<candle_vllm_core::openai::pipelines::pipeline::DefaultPipeline>,
+            CacheEngine,
+        ),
+    > = pipelines
         .into_iter()
         .map(|pipeline| {
             let cfg = pipeline.get_model_config();
@@ -238,9 +240,9 @@ async fn test_prompt_cache_with_real_inference() {
     let shared_prefix = "You are a helpful assistant. Please answer the following question:";
     let request1 = ChatCompletionRequest {
         model: model_name.clone(),
-        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![
-            ChatMessage::user(format!("{} What is 2+2?", shared_prefix)),
-        ]),
+        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![ChatMessage::user(
+            format!("{} What is 2+2?", shared_prefix),
+        )]),
         temperature: Some(0.3),
         top_p: Some(0.9),
         min_p: None,
@@ -294,9 +296,9 @@ async fn test_prompt_cache_with_real_inference() {
     // Second request with same prefix: should hit cache
     let request2 = ChatCompletionRequest {
         model: model_name.clone(),
-        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![
-            ChatMessage::user(format!("{} What is 3+3?", shared_prefix)),
-        ]),
+        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![ChatMessage::user(
+            format!("{} What is 3+3?", shared_prefix),
+        )]),
         temperature: Some(0.3),
         top_p: Some(0.9),
         min_p: None,
@@ -359,8 +361,7 @@ async fn test_prompt_cache_with_real_inference() {
         "System fingerprint should be present in first response too"
     );
     assert_eq!(
-        chat_response1.system_fingerprint,
-        chat_response2.system_fingerprint,
+        chat_response1.system_fingerprint, chat_response2.system_fingerprint,
         "System fingerprints should match"
     );
 }
@@ -384,9 +385,9 @@ async fn test_prompt_cache_disabled_behavior() {
 
     let request = ChatCompletionRequest {
         model: model_name.clone(),
-        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![
-            ChatMessage::user("What is 2+2?"),
-        ]),
+        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![ChatMessage::user(
+            "What is 2+2?",
+        )]),
         temperature: Some(0.3),
         top_p: Some(0.9),
         min_p: None,
@@ -431,7 +432,10 @@ async fn test_prompt_cache_disabled_behavior() {
         .as_ref()
         .and_then(|d| d.cached_tokens)
         .unwrap_or(0);
-    assert_eq!(cached_tokens, 0, "Cache disabled should have 0 cached tokens");
+    assert_eq!(
+        cached_tokens, 0,
+        "Cache disabled should have 0 cached tokens"
+    );
 }
 
 #[tokio::test]
@@ -451,13 +455,13 @@ async fn test_cache_control_ephemeral() {
     };
 
     let shared_prefix = "You are a helpful assistant.";
-    
+
     // First request: normal caching
     let request1 = ChatCompletionRequest {
         model: model_name.clone(),
-        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![
-            ChatMessage::user(format!("{} What is 2+2?", shared_prefix)),
-        ]),
+        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![ChatMessage::user(
+            format!("{} What is 2+2?", shared_prefix),
+        )]),
         temperature: Some(0.3),
         top_p: Some(0.9),
         min_p: None,
@@ -491,9 +495,9 @@ async fn test_cache_control_ephemeral() {
     // Second request with cache_control: ephemeral - should not use cache
     let request2 = ChatCompletionRequest {
         model: model_name.clone(),
-        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![
-            ChatMessage::user(format!("{} What is 3+3?", shared_prefix)),
-        ]),
+        messages: candle_vllm_core::openai::requests::Messages::Chat(vec![ChatMessage::user(
+            format!("{} What is 3+3?", shared_prefix),
+        )]),
         temperature: Some(0.3),
         top_p: Some(0.9),
         min_p: None,
@@ -538,7 +542,7 @@ async fn test_cache_control_ephemeral() {
         .as_ref()
         .and_then(|d| d.cached_tokens)
         .unwrap_or(0);
-    
+
     // Note: This test verifies the cache_control field is respected
     // Full implementation would skip cache lookup when ephemeral is set
     println!("Ephemeral request cached tokens: {}", cached_tokens);

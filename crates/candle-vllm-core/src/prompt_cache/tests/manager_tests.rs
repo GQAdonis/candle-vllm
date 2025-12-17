@@ -8,13 +8,13 @@ use crate::prompt_cache::{
 use std::time::SystemTime;
 use tokenizers::Tokenizer;
 
-    fn create_test_tokenizer() -> Tokenizer {
-        // Create a minimal tokenizer for testing
-        use tokenizers::models::bpe::BpeBuilder;
-        use tokenizers::ModelWrapper;
-        let bpe = BpeBuilder::default().build().unwrap();
-        Tokenizer::new(ModelWrapper::BPE(bpe))
-    }
+fn create_test_tokenizer() -> Tokenizer {
+    // Create a minimal tokenizer for testing
+    use tokenizers::models::bpe::BpeBuilder;
+    use tokenizers::ModelWrapper;
+    let bpe = BpeBuilder::default().build().unwrap();
+    Tokenizer::new(ModelWrapper::BPE(bpe))
+}
 
 #[tokio::test]
 async fn test_hash_consistency() {
@@ -84,7 +84,10 @@ async fn test_find_cached_prefix_basic() {
     }];
 
     // Store a prefix
-    manager.store_prefix(&tokens[..3], &kv_blocks).await.unwrap();
+    manager
+        .store_prefix(&tokens[..3], &kv_blocks)
+        .await
+        .unwrap();
 
     // Find it
     let result = manager.find_cached_prefix(&tokens).await.unwrap();
@@ -113,9 +116,15 @@ async fn test_find_longest_prefix() {
     }];
 
     // Store shorter prefix
-    manager.store_prefix(&tokens[..2], &kv_blocks).await.unwrap();
+    manager
+        .store_prefix(&tokens[..2], &kv_blocks)
+        .await
+        .unwrap();
     // Store longer prefix
-    manager.store_prefix(&tokens[..4], &kv_blocks).await.unwrap();
+    manager
+        .store_prefix(&tokens[..4], &kv_blocks)
+        .await
+        .unwrap();
 
     // Should find the longer one
     let result = manager.find_cached_prefix(&tokens).await.unwrap();
@@ -174,7 +183,10 @@ async fn test_model_fingerprint_validation() {
     }];
 
     // Store prefix (with matching fingerprint from config)
-    manager.store_prefix(&tokens[..3], &kv_blocks).await.unwrap();
+    manager
+        .store_prefix(&tokens[..3], &kv_blocks)
+        .await
+        .unwrap();
 
     // Should find it (fingerprint matches)
     let result = manager.find_cached_prefix(&tokens).await.unwrap();
@@ -227,7 +239,10 @@ async fn test_cache_stats() {
     }];
 
     // Store and retrieve to generate stats
-    manager.store_prefix(&tokens[..3], &kv_blocks).await.unwrap();
+    manager
+        .store_prefix(&tokens[..3], &kv_blocks)
+        .await
+        .unwrap();
     manager.find_cached_prefix(&tokens).await.unwrap(); // Hit
     manager.find_cached_prefix(&vec![10, 11, 12]).await.unwrap(); // Miss
 

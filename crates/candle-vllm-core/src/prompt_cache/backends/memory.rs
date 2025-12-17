@@ -5,11 +5,7 @@ use crate::prompt_cache::storage::{
 };
 use candle_core::Result;
 use parking_lot::RwLock;
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::SystemTime,
-};
+use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 /// In-memory cache backend using HashMap with LRU eviction.
 ///
@@ -196,7 +192,10 @@ mod tests {
             block_count: 1,
         };
 
-        backend.store_prefix(hash, &kv_blocks, metadata.clone()).await.unwrap();
+        backend
+            .store_prefix(hash, &kv_blocks, metadata.clone())
+            .await
+            .unwrap();
         let result = backend.get_prefix(hash).await.unwrap();
         assert!(result.is_some());
         let cached = result.unwrap();
@@ -224,9 +223,18 @@ mod tests {
             block_count: 1,
         };
 
-        backend.store_prefix(hash1, &kv_blocks, metadata.clone()).await.unwrap();
-        backend.store_prefix(hash2, &kv_blocks, metadata.clone()).await.unwrap();
-        backend.store_prefix(hash3, &kv_blocks, metadata).await.unwrap();
+        backend
+            .store_prefix(hash1, &kv_blocks, metadata.clone())
+            .await
+            .unwrap();
+        backend
+            .store_prefix(hash2, &kv_blocks, metadata.clone())
+            .await
+            .unwrap();
+        backend
+            .store_prefix(hash3, &kv_blocks, metadata)
+            .await
+            .unwrap();
 
         // hash1 should be evicted (oldest)
         assert!(backend.get_prefix(hash1).await.unwrap().is_none());
@@ -252,7 +260,10 @@ mod tests {
             block_count: 1,
         };
 
-        backend.store_prefix(hash, &kv_blocks, metadata).await.unwrap();
+        backend
+            .store_prefix(hash, &kv_blocks, metadata)
+            .await
+            .unwrap();
         backend.get_prefix(hash).await.unwrap(); // Hit
         backend.get_prefix(b"nonexistent").await.unwrap(); // Miss
 

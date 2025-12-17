@@ -287,7 +287,7 @@ impl Config {
     pub fn system_fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        
+
         // Hash key configuration parameters
         hasher.update(self.hidden_size.to_le_bytes());
         hasher.update(self.num_hidden_layers.to_le_bytes());
@@ -299,9 +299,14 @@ impl Config {
         }
         hasher.update(self.vocab_size.to_le_bytes());
         hasher.update(self.max_seq_len.to_le_bytes());
-        
+
         let hash = hasher.finalize();
-        format!("fp_{:x}", hash.iter().take(8).fold(0u64, |acc, &b| (acc << 8) | b as u64))
+        format!(
+            "fp_{:x}",
+            hash.iter()
+                .take(8)
+                .fold(0u64, |acc, &b| (acc << 8) | b as u64)
+        )
     }
 
     pub fn v_head_dim(&self) -> usize {

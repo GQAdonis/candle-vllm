@@ -147,7 +147,8 @@ pub trait MailboxBackendOps: Send + Sync {
     async fn delete(&self, request_id: &str) -> Result<bool, BackendError>;
 
     /// Atomically get and delete a mailbox record. Returns the record if found.
-    async fn get_and_delete(&self, request_id: &str) -> Result<Option<MailboxRecord>, BackendError>;
+    async fn get_and_delete(&self, request_id: &str)
+        -> Result<Option<MailboxRecord>, BackendError>;
 
     /// Clean up expired records based on retention policy.
     /// Returns the number of records deleted.

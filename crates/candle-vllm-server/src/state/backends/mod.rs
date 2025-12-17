@@ -30,9 +30,7 @@ pub use postgres::{PostgresMailboxBackend, PostgresQueueBackend};
 pub use surreal::{SurrealMailboxBackend, SurrealQueueBackend};
 
 use crate::config::{MailboxBackendConfig, QueueBackendConfig};
-use crate::state::backend_traits::{
-    BackendError, MailboxBackendOps, QueueBackendOps,
-};
+use crate::state::backend_traits::{BackendError, MailboxBackendOps, QueueBackendOps};
 use std::sync::Arc;
 
 /// Dynamic mailbox backend type using trait objects.
@@ -52,10 +50,7 @@ pub async fn build_mailbox_backend(
         }
         #[cfg(feature = "queue-sqlite")]
         "sqlite" => {
-            let path = config
-                .sqlite_path
-                .as_deref()
-                .unwrap_or("./data/mailbox.db");
+            let path = config.sqlite_path.as_deref().unwrap_or("./data/mailbox.db");
             let backend = SqliteMailboxBackend::new(path).await?;
             Ok(Arc::new(backend))
         }
@@ -79,9 +74,21 @@ pub async fn build_mailbox_backend(
         other => Err(BackendError::config(format!(
             "unsupported mailbox backend '{}'; available: memory{}{}{}",
             other,
-            if cfg!(feature = "queue-sqlite") { ", sqlite" } else { "" },
-            if cfg!(feature = "queue-postgres") { ", postgres" } else { "" },
-            if cfg!(feature = "queue-surreal") { ", surrealdb" } else { "" },
+            if cfg!(feature = "queue-sqlite") {
+                ", sqlite"
+            } else {
+                ""
+            },
+            if cfg!(feature = "queue-postgres") {
+                ", postgres"
+            } else {
+                ""
+            },
+            if cfg!(feature = "queue-surreal") {
+                ", surrealdb"
+            } else {
+                ""
+            },
         ))),
     }
 }
@@ -97,10 +104,7 @@ pub async fn build_queue_backend(
         }
         #[cfg(feature = "queue-sqlite")]
         "sqlite" => {
-            let path = config
-                .sqlite_path
-                .as_deref()
-                .unwrap_or("./data/queue.db");
+            let path = config.sqlite_path.as_deref().unwrap_or("./data/queue.db");
             let backend = SqliteQueueBackend::new(path).await?;
             Ok(Arc::new(backend))
         }
@@ -131,9 +135,21 @@ pub async fn build_queue_backend(
         other => Err(BackendError::config(format!(
             "unsupported queue backend '{}'; available: memory{}{}{}",
             other,
-            if cfg!(feature = "queue-sqlite") { ", sqlite" } else { "" },
-            if cfg!(feature = "queue-postgres") { ", postgres" } else { "" },
-            if cfg!(feature = "queue-surreal") { ", surrealdb" } else { "" },
+            if cfg!(feature = "queue-sqlite") {
+                ", sqlite"
+            } else {
+                ""
+            },
+            if cfg!(feature = "queue-postgres") {
+                ", postgres"
+            } else {
+                ""
+            },
+            if cfg!(feature = "queue-surreal") {
+                ", surrealdb"
+            } else {
+                ""
+            },
         ))),
     }
 }

@@ -5,17 +5,13 @@ use crate::prompt_cache::storage::{
     CacheMetadata, CacheStats, CachedPrefix, KVCacheBlock, PromptCacheStorage,
 };
 #[cfg(feature = "prompt-cache-sled")]
-use serde_json;
-#[cfg(feature = "prompt-cache-sled")]
 use candle_core::Result;
 #[cfg(feature = "prompt-cache-sled")]
 use parking_lot::RwLock;
 #[cfg(feature = "prompt-cache-sled")]
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::SystemTime,
-};
+use serde_json;
+#[cfg(feature = "prompt-cache-sled")]
+use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
 /// Sled-based persistent cache backend.
 ///
@@ -41,8 +37,9 @@ impl SledCacheBackend {
     /// Returns an error if the database cannot be opened
     pub fn new(cache_path: &str) -> Result<Self> {
         let path = PathBuf::from(cache_path);
-        std::fs::create_dir_all(&path)
-            .map_err(|e| candle_core::Error::Msg(format!("Failed to create cache directory: {}", e)))?;
+        std::fs::create_dir_all(&path).map_err(|e| {
+            candle_core::Error::Msg(format!("Failed to create cache directory: {}", e))
+        })?;
 
         let db = sled::open(&path)
             .map_err(|e| candle_core::Error::Msg(format!("Failed to open sled database: {}", e)))?;
@@ -112,8 +109,10 @@ impl PromptCacheStorage for SledCacheBackend {
 
         match self.db.get(prefix_hash) {
             Ok(Some(serialized)) => {
-                let cached_prefix: CachedPrefix = serde_json::from_slice(&serialized)
-                    .map_err(|e| candle_core::Error::Msg(format!("Deserialization failed: {}", e)))?;
+                let cached_prefix: CachedPrefix =
+                    serde_json::from_slice(&serialized).map_err(|e| {
+                        candle_core::Error::Msg(format!("Deserialization failed: {}", e))
+                    })?;
 
                 stats.hits += 1;
                 Ok(Some(cached_prefix))
@@ -187,7 +186,10 @@ mod tests {
             block_count: 1,
         };
 
-        backend.store_prefix(hash, &kv_blocks, metadata.clone()).await.unwrap();
+        backend
+            .store_prefix(hash, &kv_blocks, metadata.clone())
+            .await
+            .unwrap();
         let result = backend.get_prefix(hash).await.unwrap();
         assert!(result.is_some());
         let cached = result.unwrap();
@@ -216,7 +218,10 @@ mod tests {
                 prefix_length: 1,
                 block_count: 1,
             };
-            backend.store_prefix(hash, &kv_blocks, metadata).await.unwrap();
+            backend
+                .store_prefix(hash, &kv_blocks, metadata)
+                .await
+                .unwrap();
         }
 
         // Retrieve from new instance (simulating restart)

@@ -35,7 +35,10 @@ mod tests {
             block_count: 1,
         };
 
-        backend.store_prefix(hash, &kv_blocks, metadata.clone()).await.unwrap();
+        backend
+            .store_prefix(hash, &kv_blocks, metadata.clone())
+            .await
+            .unwrap();
         let result = backend.get_prefix(hash).await.unwrap();
         assert!(result.is_some());
         let cached = result.unwrap();
@@ -83,7 +86,10 @@ mod tests {
             dtype: 0,
         }];
 
-        manager.store_prefix(&tokens[..3], &kv_blocks).await.unwrap();
+        manager
+            .store_prefix(&tokens[..3], &kv_blocks)
+            .await
+            .unwrap();
         let result = manager.find_cached_prefix(&tokens).await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().cached_tokens, 3);

@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
 
 use crate::state::backend_traits::{
-    BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord, now_secs,
+    now_secs, BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord,
 };
 
 /// In-memory mailbox backend using a HashMap protected by RwLock.
@@ -53,7 +53,10 @@ impl MailboxBackendOps for MemoryMailboxBackend {
         Ok(self.records.write().remove(request_id).is_some())
     }
 
-    async fn get_and_delete(&self, request_id: &str) -> Result<Option<MailboxRecord>, BackendError> {
+    async fn get_and_delete(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<MailboxRecord>, BackendError> {
         Ok(self.records.write().remove(request_id))
     }
 
@@ -101,7 +104,7 @@ impl QueueBackendOps for MemoryQueueBackend {
     async fn dequeue(&self, model: &str, max: usize) -> Result<Vec<QueueRecord>, BackendError> {
         let mut queues = self.queues.write();
         let queue = queues.entry(model.to_string()).or_default();
-        
+
         let mut result = Vec::with_capacity(max.min(queue.len()));
         for _ in 0..max {
             if let Some(record) = queue.pop_front() {
@@ -114,12 +117,7 @@ impl QueueBackendOps for MemoryQueueBackend {
     }
 
     async fn len(&self, model: &str) -> Result<usize, BackendError> {
-        Ok(self
-            .queues
-            .read()
-            .get(model)
-            .map(|q| q.len())
-            .unwrap_or(0))
+        Ok(self.queues.read().get(model).map(|q| q.len()).unwrap_or(0))
     }
 
     async fn list(&self, model: Option<&str>) -> Result<Vec<QueueRecord>, BackendError> {
@@ -130,10 +128,7 @@ impl QueueBackendOps for MemoryQueueBackend {
                 .map(|q| q.iter().cloned().collect())
                 .unwrap_or_default())
         } else {
-            Ok(queues
-                .values()
-                .flat_map(|q| q.iter().cloned())
-                .collect())
+            Ok(queues.values().flat_map(|q| q.iter().cloned()).collect())
         }
     }
 
@@ -156,7 +151,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_mailbox_store_and_get() {
         let backend = MemoryMailboxBackend::new();
-        
+
         let record = MailboxRecord {
             request_id: "test-123".to_string(),
             model: "gpt-4".to_string(),
@@ -166,7 +161,7 @@ mod tests {
         };
 
         backend.store(record.clone()).await.unwrap();
-        
+
         let retrieved = backend.get("test-123").await.unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().request_id, "test-123");
@@ -175,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_mailbox_get_and_delete() {
         let backend = MemoryMailboxBackend::new();
-        
+
         let record = MailboxRecord {
             request_id: "test-456".to_string(),
             model: "gpt-4".to_string(),
@@ -185,10 +180,10 @@ mod tests {
         };
 
         backend.store(record).await.unwrap();
-        
+
         let retrieved = backend.get_and_delete("test-456").await.unwrap();
         assert!(retrieved.is_some());
-        
+
         // Should be gone now
         let again = backend.get("test-456").await.unwrap();
         assert!(again.is_none());
@@ -197,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_queue_enqueue_dequeue() {
         let backend = MemoryQueueBackend::new();
-        
+
         let record1 = QueueRecord {
             id: "req-1".to_string(),
             model: "llama".to_string(),
@@ -226,18 +221,21 @@ mod tests {
     #[tokio::test]
     async fn test_memory_queue_clear() {
         let backend = MemoryQueueBackend::new();
-        
+
         for i in 0..5 {
-            backend.enqueue(QueueRecord {
-                id: format!("req-{}", i),
-                model: "test-model".to_string(),
-                queued_at: i as u64,
-                request: serde_json::json!({}),
-            }).await.unwrap();
+            backend
+                .enqueue(QueueRecord {
+                    id: format!("req-{}", i),
+                    model: "test-model".to_string(),
+                    queued_at: i as u64,
+                    request: serde_json::json!({}),
+                })
+                .await
+                .unwrap();
         }
 
         assert_eq!(backend.len("test-model").await.unwrap(), 5);
-        
+
         let cleared = backend.clear("test-model").await.unwrap();
         assert_eq!(cleared, 5);
         assert_eq!(backend.len("test-model").await.unwrap(), 0);
@@ -247,29 +245,35 @@ mod tests {
     async fn test_memory_mailbox_cleanup_expired() {
         let backend = MemoryMailboxBackend::new();
         let now = now_secs();
-        
+
         // Add an old record
-        backend.store(MailboxRecord {
-            request_id: "old".to_string(),
-            model: "test".to_string(),
-            created: now - 3600, // 1 hour ago
-            status: "completed".to_string(),
-            response: None,
-        }).await.unwrap();
-        
+        backend
+            .store(MailboxRecord {
+                request_id: "old".to_string(),
+                model: "test".to_string(),
+                created: now - 3600, // 1 hour ago
+                status: "completed".to_string(),
+                response: None,
+            })
+            .await
+            .unwrap();
+
         // Add a recent record
-        backend.store(MailboxRecord {
-            request_id: "new".to_string(),
-            model: "test".to_string(),
-            created: now,
-            status: "completed".to_string(),
-            response: None,
-        }).await.unwrap();
+        backend
+            .store(MailboxRecord {
+                request_id: "new".to_string(),
+                model: "test".to_string(),
+                created: now,
+                status: "completed".to_string(),
+                response: None,
+            })
+            .await
+            .unwrap();
 
         // Cleanup records older than 30 minutes
         let removed = backend.cleanup_expired(1800).await.unwrap();
         assert_eq!(removed, 1);
-        
+
         // Old should be gone, new should remain
         assert!(backend.get("old").await.unwrap().is_none());
         assert!(backend.get("new").await.unwrap().is_some());

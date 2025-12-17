@@ -9,7 +9,7 @@ use sqlx::{PgPool, Row};
 use tracing::{debug, info};
 
 use crate::state::backend_traits::{
-    BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord, now_secs,
+    now_secs, BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord,
 };
 
 /// PostgreSQL mailbox backend using sqlx connection pool.
@@ -26,7 +26,9 @@ impl PostgresMailboxBackend {
             .max_connections(10)
             .connect(url)
             .await
-            .map_err(|e| BackendError::connection(format!("failed to connect to PostgreSQL: {}", e)))?;
+            .map_err(|e| {
+                BackendError::connection(format!("failed to connect to PostgreSQL: {}", e))
+            })?;
 
         // Initialize schema
         sqlx::query(
@@ -44,12 +46,10 @@ impl PostgresMailboxBackend {
         .await
         .map_err(|e| BackendError::connection(format!("failed to create schema: {}", e)))?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_mailbox_created ON mailbox_records(created)",
-        )
-        .execute(&pool)
-        .await
-        .map_err(|e| BackendError::connection(format!("failed to create index: {}", e)))?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_mailbox_created ON mailbox_records(created)")
+            .execute(&pool)
+            .await
+            .map_err(|e| BackendError::connection(format!("failed to create index: {}", e)))?;
 
         info!("PostgreSQL mailbox backend initialized");
         Ok(Self { pool })
@@ -146,7 +146,10 @@ impl MailboxBackendOps for PostgresMailboxBackend {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn get_and_delete(&self, request_id: &str) -> Result<Option<MailboxRecord>, BackendError> {
+    async fn get_and_delete(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<MailboxRecord>, BackendError> {
         debug!(request_id = %request_id, "Getting and deleting mailbox record");
 
         // Use RETURNING for atomic get-and-delete
@@ -201,7 +204,9 @@ impl PostgresQueueBackend {
             .max_connections(10)
             .connect(url)
             .await
-            .map_err(|e| BackendError::connection(format!("failed to connect to PostgreSQL: {}", e)))?;
+            .map_err(|e| {
+                BackendError::connection(format!("failed to connect to PostgreSQL: {}", e))
+            })?;
 
         // Initialize schema
         sqlx::query(
@@ -367,7 +372,7 @@ mod tests {
     async fn test_postgres_mailbox_store_and_get() {
         let url = std::env::var("TEST_POSTGRES_URL")
             .unwrap_or_else(|_| "postgres://localhost/test_candle_vllm".to_string());
-        
+
         let backend = PostgresMailboxBackend::new(&url).await.unwrap();
 
         let record = MailboxRecord {
@@ -393,7 +398,7 @@ mod tests {
     async fn test_postgres_queue_enqueue_dequeue() {
         let url = std::env::var("TEST_POSTGRES_URL")
             .unwrap_or_else(|_| "postgres://localhost/test_candle_vllm".to_string());
-        
+
         let backend = PostgresQueueBackend::new(&url).await.unwrap();
         let test_model = format!("test-model-{}", uuid::Uuid::new_v4());
 

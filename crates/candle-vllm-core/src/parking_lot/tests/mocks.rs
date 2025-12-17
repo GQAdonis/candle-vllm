@@ -1,8 +1,8 @@
 //! Mock implementations for parking_lot tests.
 
 use crate::parking_lot::{
+    types::{ParkingLotTaskMetadata, PrometheusWorkerExecutor},
     InferenceJob, InferenceResult, TaskExecutor, TaskMetadata,
-    types::{PrometheusWorkerExecutor, ParkingLotTaskMetadata},
 };
 use async_trait::async_trait;
 use std::time::Duration;
@@ -72,7 +72,11 @@ impl TaskExecutor<InferenceJob, InferenceResult> for MockLlmExecutor {
 
 impl MockLlmExecutor {
     /// Internal execute implementation shared by both trait implementations.
-    async fn execute_internal(&self, payload: InferenceJob, _meta: TaskMetadata) -> InferenceResult {
+    async fn execute_internal(
+        &self,
+        payload: InferenceJob,
+        _meta: TaskMetadata,
+    ) -> InferenceResult {
         // Simulate processing time
         if self.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;

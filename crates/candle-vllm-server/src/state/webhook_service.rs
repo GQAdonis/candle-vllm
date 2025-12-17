@@ -9,10 +9,10 @@
 use crate::config::WebhookConfig;
 use crate::state::backend_traits::MailboxRecord;
 use std::collections::HashMap;
-#[cfg(feature = "webhooks")]
-use tracing::{debug, error, info, warn};
 #[cfg(not(feature = "webhooks"))]
 use tracing::warn;
+#[cfg(feature = "webhooks")]
+use tracing::{debug, error, info, warn};
 
 /// Error type for webhook operations.
 #[derive(Debug, Clone)]
@@ -289,11 +289,7 @@ impl WebhookService {
         record: &MailboxRecord,
         request_config: Option<&RequestWebhookConfig>,
     ) -> Result<(), WebhookError> {
-        let retry_count = self
-            .config
-            .as_ref()
-            .map(|c| c.retry_count)
-            .unwrap_or(3);
+        let retry_count = self.config.as_ref().map(|c| c.retry_count).unwrap_or(3);
         let retry_delay_ms = self
             .config
             .as_ref()
@@ -427,18 +423,23 @@ fn compute_hmac_sha512_signature(secret: &str, payload: &str) -> Result<String, 
 #[cfg(feature = "webhooks")]
 fn interpolate_env(s: &str) -> String {
     let mut result = s.to_string();
-    
+
     // Find all ${...} patterns
     while let Some(start) = result.find("${") {
         if let Some(end) = result[start..].find('}') {
             let var_name = &result[start + 2..start + end];
             let replacement = std::env::var(var_name).unwrap_or_default();
-            result = format!("{}{}{}", &result[..start], replacement, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                replacement,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
     }
-    
+
     result
 }
 
@@ -462,10 +463,7 @@ mod tests {
             "always".parse::<WebhookMode>().unwrap(),
             WebhookMode::Always
         );
-        assert_eq!(
-            "never".parse::<WebhookMode>().unwrap(),
-            WebhookMode::Never
-        );
+        assert_eq!("never".parse::<WebhookMode>().unwrap(), WebhookMode::Never);
     }
 
     #[test]

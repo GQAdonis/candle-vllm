@@ -9,7 +9,7 @@ use tokio_rusqlite::Connection;
 use tracing::{debug, info};
 
 use crate::state::backend_traits::{
-    BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord, now_secs,
+    now_secs, BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord,
 };
 
 /// SQLite mailbox backend using tokio-rusqlite for async operations.
@@ -95,22 +95,22 @@ impl MailboxBackendOps for SqliteMailboxBackend {
         debug!(request_id = %request_id, "Getting mailbox record");
 
         let request_id = request_id.to_string();
-        
+
         self.conn
             .call(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT request_id, model, created, status, response 
                      FROM mailbox_records WHERE request_id = ?1",
                 )?;
-                
+
                 let mut rows = stmt.query(params![request_id])?;
-                
+
                 if let Some(row) = rows.next()? {
                     let response_str: Option<String> = row.get(4)?;
                     let response = response_str
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok());
-                    
+
                     Ok(Some(MailboxRecord {
                         request_id: row.get(0)?,
                         model: row.get(1)?,
@@ -135,13 +135,13 @@ impl MailboxBackendOps for SqliteMailboxBackend {
                     "SELECT request_id, model, created, status, response 
                      FROM mailbox_records ORDER BY created DESC",
                 )?;
-                
+
                 let rows = stmt.query_map([], |row| {
                     let response_str: Option<String> = row.get(4)?;
                     let response = response_str
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok());
-                    
+
                     Ok(MailboxRecord {
                         request_id: row.get(0)?,
                         model: row.get(1)?,
@@ -150,7 +150,7 @@ impl MailboxBackendOps for SqliteMailboxBackend {
                         response,
                     })
                 })?;
-                
+
                 let mut records = Vec::new();
                 for row in rows {
                     records.push(row?);
@@ -165,7 +165,7 @@ impl MailboxBackendOps for SqliteMailboxBackend {
         debug!(request_id = %request_id, "Deleting mailbox record");
 
         let request_id = request_id.to_string();
-        
+
         self.conn
             .call(move |conn| {
                 let changes = conn.execute(
@@ -178,31 +178,34 @@ impl MailboxBackendOps for SqliteMailboxBackend {
             .map_err(|e| BackendError::other(format!("failed to delete record: {}", e)))
     }
 
-    async fn get_and_delete(&self, request_id: &str) -> Result<Option<MailboxRecord>, BackendError> {
+    async fn get_and_delete(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<MailboxRecord>, BackendError> {
         debug!(request_id = %request_id, "Getting and deleting mailbox record");
 
         let request_id = request_id.to_string();
-        
+
         self.conn
             .call(move |conn| {
                 // Use a transaction for atomicity
                 let tx = conn.transaction()?;
-                
+
                 // Get the record
                 let record = {
                     let mut stmt = tx.prepare(
                         "SELECT request_id, model, created, status, response 
                          FROM mailbox_records WHERE request_id = ?1",
                     )?;
-                    
+
                     let mut rows = stmt.query(params![&request_id])?;
-                    
+
                     if let Some(row) = rows.next()? {
                         let response_str: Option<String> = row.get(4)?;
                         let response = response_str
                             .as_ref()
                             .and_then(|s| serde_json::from_str(s).ok());
-                        
+
                         Some(MailboxRecord {
                             request_id: row.get(0)?,
                             model: row.get(1)?,
@@ -214,7 +217,7 @@ impl MailboxBackendOps for SqliteMailboxBackend {
                         None
                     }
                 };
-                
+
                 // Delete if found
                 if record.is_some() {
                     tx.execute(
@@ -222,7 +225,7 @@ impl MailboxBackendOps for SqliteMailboxBackend {
                         params![&request_id],
                     )?;
                 }
-                
+
                 tx.commit()?;
                 Ok(record)
             })
@@ -299,8 +302,9 @@ impl QueueBackendOps for SqliteQueueBackend {
     async fn enqueue(&self, record: QueueRecord) -> Result<(), BackendError> {
         debug!(id = %record.id, model = %record.model, "Enqueueing record");
 
-        let request_json = serde_json::to_string(&record.request)
-            .map_err(|e| BackendError::serialization(format!("failed to serialize request: {}", e)))?;
+        let request_json = serde_json::to_string(&record.request).map_err(|e| {
+            BackendError::serialization(format!("failed to serialize request: {}", e))
+        })?;
 
         self.conn
             .call(move |conn| {
@@ -325,12 +329,12 @@ impl QueueBackendOps for SqliteQueueBackend {
         debug!(model = %model, max = max, "Dequeueing records");
 
         let model = model.to_string();
-        
+
         self.conn
             .call(move |conn| {
                 // Use a transaction for atomic dequeue
                 let tx = conn.transaction()?;
-                
+
                 // Select oldest records
                 let records = {
                     let mut stmt = tx.prepare(
@@ -340,11 +344,11 @@ impl QueueBackendOps for SqliteQueueBackend {
                          ORDER BY queued_at ASC 
                          LIMIT ?2",
                     )?;
-                    
+
                     let rows = stmt.query_map(params![&model, max as i64], |row| {
                         let request_str: String = row.get(3)?;
                         let request = serde_json::from_str(&request_str).unwrap_or_default();
-                        
+
                         Ok(QueueRecord {
                             id: row.get(0)?,
                             model: row.get(1)?,
@@ -352,14 +356,14 @@ impl QueueBackendOps for SqliteQueueBackend {
                             request,
                         })
                     })?;
-                    
+
                     let mut records = Vec::new();
                     for row in rows {
                         records.push(row?);
                     }
                     records
                 };
-                
+
                 // Delete selected records
                 for record in &records {
                     tx.execute(
@@ -367,7 +371,7 @@ impl QueueBackendOps for SqliteQueueBackend {
                         params![record.model, record.queued_at as i64, record.id],
                     )?;
                 }
-                
+
                 tx.commit()?;
                 Ok(records)
             })
@@ -377,7 +381,7 @@ impl QueueBackendOps for SqliteQueueBackend {
 
     async fn len(&self, model: &str) -> Result<usize, BackendError> {
         let model = model.to_string();
-        
+
         self.conn
             .call(move |conn| {
                 let count: i64 = conn.query_row(
@@ -393,7 +397,7 @@ impl QueueBackendOps for SqliteQueueBackend {
 
     async fn list(&self, model: Option<&str>) -> Result<Vec<QueueRecord>, BackendError> {
         let model = model.map(|s| s.to_string());
-        
+
         self.conn
             .call(move |conn| {
                 let records = if let Some(model) = model {
@@ -403,11 +407,11 @@ impl QueueBackendOps for SqliteQueueBackend {
                          WHERE model = ?1 
                          ORDER BY queued_at ASC",
                     )?;
-                    
+
                     let rows = stmt.query_map(params![model], |row| {
                         let request_str: String = row.get(3)?;
                         let request = serde_json::from_str(&request_str).unwrap_or_default();
-                        
+
                         Ok(QueueRecord {
                             id: row.get(0)?,
                             model: row.get(1)?,
@@ -415,7 +419,7 @@ impl QueueBackendOps for SqliteQueueBackend {
                             request,
                         })
                     })?;
-                    
+
                     let mut records = Vec::new();
                     for row in rows {
                         records.push(row?);
@@ -427,11 +431,11 @@ impl QueueBackendOps for SqliteQueueBackend {
                          FROM queue_records 
                          ORDER BY queued_at ASC",
                     )?;
-                    
+
                     let rows = stmt.query_map([], |row| {
                         let request_str: String = row.get(3)?;
                         let request = serde_json::from_str(&request_str).unwrap_or_default();
-                        
+
                         Ok(QueueRecord {
                             id: row.get(0)?,
                             model: row.get(1)?,
@@ -439,14 +443,14 @@ impl QueueBackendOps for SqliteQueueBackend {
                             request,
                         })
                     })?;
-                    
+
                     let mut records = Vec::new();
                     for row in rows {
                         records.push(row?);
                     }
                     records
                 };
-                
+
                 Ok(records)
             })
             .await
@@ -457,13 +461,11 @@ impl QueueBackendOps for SqliteQueueBackend {
         debug!(model = %model, "Clearing queue for model");
 
         let model = model.to_string();
-        
+
         self.conn
             .call(move |conn| {
-                let changes = conn.execute(
-                    "DELETE FROM queue_records WHERE model = ?1",
-                    params![model],
-                )?;
+                let changes =
+                    conn.execute("DELETE FROM queue_records WHERE model = ?1", params![model])?;
                 Ok(changes)
             })
             .await

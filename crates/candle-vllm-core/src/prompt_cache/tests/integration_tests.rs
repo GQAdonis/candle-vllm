@@ -39,7 +39,10 @@ mod tests {
             value_shape: vec![2, 2],
             dtype: 0,
         }];
-        manager.store_prefix(&tokens1[..6], &kv_blocks).await.unwrap();
+        manager
+            .store_prefix(&tokens1[..6], &kv_blocks)
+            .await
+            .unwrap();
 
         // Second request with same prefix: should hit cache
         let tokens2 = vec![1, 2, 3, 4, 5, 6, 9, 10]; // Same first 6 tokens
@@ -96,14 +99,35 @@ mod tests {
         }];
 
         // Store multiple different prefixes
-        manager.store_prefix(&vec![1, 2, 3], &kv_blocks).await.unwrap();
-        manager.store_prefix(&vec![4, 5, 6], &kv_blocks).await.unwrap();
-        manager.store_prefix(&vec![7, 8, 9], &kv_blocks).await.unwrap();
+        manager
+            .store_prefix(&vec![1, 2, 3], &kv_blocks)
+            .await
+            .unwrap();
+        manager
+            .store_prefix(&vec![4, 5, 6], &kv_blocks)
+            .await
+            .unwrap();
+        manager
+            .store_prefix(&vec![7, 8, 9], &kv_blocks)
+            .await
+            .unwrap();
 
         // All should be retrievable
-        assert!(manager.find_cached_prefix(&vec![1, 2, 3, 10]).await.unwrap().is_some());
-        assert!(manager.find_cached_prefix(&vec![4, 5, 6, 10]).await.unwrap().is_some());
-        assert!(manager.find_cached_prefix(&vec![7, 8, 9, 10]).await.unwrap().is_some());
+        assert!(manager
+            .find_cached_prefix(&vec![1, 2, 3, 10])
+            .await
+            .unwrap()
+            .is_some());
+        assert!(manager
+            .find_cached_prefix(&vec![4, 5, 6, 10])
+            .await
+            .unwrap()
+            .is_some());
+        assert!(manager
+            .find_cached_prefix(&vec![7, 8, 9, 10])
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -125,7 +149,10 @@ mod tests {
         }];
 
         // Store a prefix
-        manager.store_prefix(&vec![1, 2, 3], &kv_blocks).await.unwrap();
+        manager
+            .store_prefix(&vec![1, 2, 3], &kv_blocks)
+            .await
+            .unwrap();
 
         // Generate hits and misses
         for _ in 0..5 {

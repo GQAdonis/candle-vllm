@@ -6,10 +6,10 @@
 use crate::prompt_cache::storage::{
     CacheMetadata, CacheStats, CachedPrefix, KVCacheBlock, PromptCacheStorage,
 };
-#[cfg(feature = "prompt-cache-redis")]
-use serde_json;
 use candle_core::Result;
 use parking_lot::RwLock;
+#[cfg(feature = "prompt-cache-redis")]
+use serde_json;
 use std::sync::Arc;
 
 /// Redis-based prompt cache backend.
@@ -110,8 +110,10 @@ impl PromptCacheStorage for RedisCacheBackend {
             .await
         {
             Ok(Some(serialized)) => {
-                let cached_prefix: CachedPrefix = serde_json::from_slice(&serialized)
-                    .map_err(|e| candle_core::Error::Msg(format!("Deserialization failed: {}", e)))?;
+                let cached_prefix: CachedPrefix =
+                    serde_json::from_slice(&serialized).map_err(|e| {
+                        candle_core::Error::Msg(format!("Deserialization failed: {}", e))
+                    })?;
                 Ok(Some(cached_prefix))
             }
             Ok(None) => Ok(None),
@@ -185,14 +187,13 @@ mod tests {
     /// Helper to check if Redis is available for testing
     async fn redis_available() -> bool {
         match redis::Client::open("redis://127.0.0.1:6379") {
-            Ok(client) => {
-                match redis::aio::ConnectionManager::new(client).await {
-                    Ok(mut conn) => {
-                        redis::cmd("PING").query_async::<_, String>(&mut conn).await.is_ok()
-                    }
-                    Err(_) => false,
-                }
-            }
+            Ok(client) => match redis::aio::ConnectionManager::new(client).await {
+                Ok(mut conn) => redis::cmd("PING")
+                    .query_async::<_, String>(&mut conn)
+                    .await
+                    .is_ok(),
+                Err(_) => false,
+            },
             Err(_) => false,
         }
     }
@@ -221,7 +222,10 @@ mod tests {
             block_count: 1,
         };
 
-        backend.store_prefix(hash, &kv_blocks, metadata.clone()).await.unwrap();
+        backend
+            .store_prefix(hash, &kv_blocks, metadata.clone())
+            .await
+            .unwrap();
         let result = backend.get_prefix(hash).await.unwrap();
         assert!(result.is_some());
         let cached = result.unwrap();
@@ -256,14 +260,17 @@ mod tests {
             block_count: 1,
         };
 
-        backend.store_prefix(hash, &kv_blocks, metadata).await.unwrap();
-        
+        backend
+            .store_prefix(hash, &kv_blocks, metadata)
+            .await
+            .unwrap();
+
         // Should exist immediately
         assert!(backend.has_prefix(hash).await.unwrap());
-        
+
         // Wait for TTL to expire
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        
+
         // Should be gone after TTL
         assert!(!backend.has_prefix(hash).await.unwrap());
     }

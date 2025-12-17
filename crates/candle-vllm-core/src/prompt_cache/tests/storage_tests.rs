@@ -26,7 +26,10 @@ async fn test_memory_backend_basic_operations() {
     };
 
     // Test store
-    backend.store_prefix(hash, &kv_blocks, metadata.clone()).await.unwrap();
+    backend
+        .store_prefix(hash, &kv_blocks, metadata.clone())
+        .await
+        .unwrap();
 
     // Test get
     let result = backend.get_prefix(hash).await.unwrap();
@@ -44,7 +47,10 @@ async fn test_memory_backend_basic_operations() {
     assert!(!backend.has_prefix(hash).await.unwrap());
 
     // Test clear
-    backend.store_prefix(hash, &kv_blocks, metadata).await.unwrap();
+    backend
+        .store_prefix(hash, &kv_blocks, metadata)
+        .await
+        .unwrap();
     backend.clear().await.unwrap();
     assert!(!backend.has_prefix(hash).await.unwrap());
 }
@@ -67,9 +73,18 @@ async fn test_memory_backend_lru_eviction() {
         block_count: 1,
     };
 
-    backend.store_prefix(b"prefix1", &kv_blocks, metadata.clone()).await.unwrap();
-    backend.store_prefix(b"prefix2", &kv_blocks, metadata.clone()).await.unwrap();
-    backend.store_prefix(b"prefix3", &kv_blocks, metadata).await.unwrap();
+    backend
+        .store_prefix(b"prefix1", &kv_blocks, metadata.clone())
+        .await
+        .unwrap();
+    backend
+        .store_prefix(b"prefix2", &kv_blocks, metadata.clone())
+        .await
+        .unwrap();
+    backend
+        .store_prefix(b"prefix3", &kv_blocks, metadata)
+        .await
+        .unwrap();
 
     // prefix1 should be evicted (oldest)
     assert!(!backend.has_prefix(b"prefix1").await.unwrap());
@@ -96,7 +111,10 @@ async fn test_memory_backend_stats() {
         block_count: 1,
     };
 
-    backend.store_prefix(hash, &kv_blocks, metadata).await.unwrap();
+    backend
+        .store_prefix(hash, &kv_blocks, metadata)
+        .await
+        .unwrap();
     backend.get_prefix(hash).await.unwrap(); // Hit
     backend.get_prefix(b"nonexistent").await.unwrap(); // Miss
 

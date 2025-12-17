@@ -9,7 +9,7 @@ use surrealdb::Surreal;
 use tracing::{debug, error, info};
 
 use crate::state::backend_traits::{
-    BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord, now_secs,
+    now_secs, BackendError, MailboxBackendOps, MailboxRecord, QueueBackendOps, QueueRecord,
 };
 
 /// SurrealDB mailbox backend using embedded RocksDB storage.
@@ -21,7 +21,7 @@ impl SurrealMailboxBackend {
     /// Create a new SurrealDB mailbox backend at the given path.
     pub async fn new(path: &str) -> Result<Self, BackendError> {
         info!(path = %path, "Initializing SurrealDB mailbox backend");
-        
+
         let db = Surreal::new::<RocksDb>(path)
             .await
             .map_err(|e| BackendError::connection(format!("failed to open SurrealDB: {}", e)))?;
@@ -29,7 +29,9 @@ impl SurrealMailboxBackend {
         db.use_ns("candle_vllm")
             .use_db("mailbox")
             .await
-            .map_err(|e| BackendError::connection(format!("failed to select namespace/db: {}", e)))?;
+            .map_err(|e| {
+                BackendError::connection(format!("failed to select namespace/db: {}", e))
+            })?;
 
         info!("SurrealDB mailbox backend initialized");
         Ok(Self { db })
@@ -40,9 +42,9 @@ impl SurrealMailboxBackend {
 impl MailboxBackendOps for SurrealMailboxBackend {
     async fn store(&self, record: MailboxRecord) -> Result<(), BackendError> {
         debug!(request_id = %record.request_id, "Storing mailbox record");
-        
+
         let request_id = record.request_id.clone();
-        
+
         // Upsert the record using request_id as the record ID
         let _: Option<MailboxRecord> = self
             .db
@@ -56,7 +58,7 @@ impl MailboxBackendOps for SurrealMailboxBackend {
 
     async fn get(&self, request_id: &str) -> Result<Option<MailboxRecord>, BackendError> {
         debug!(request_id = %request_id, "Getting mailbox record");
-        
+
         let record: Option<MailboxRecord> = self
             .db
             .select(("mailbox", request_id))
@@ -68,7 +70,7 @@ impl MailboxBackendOps for SurrealMailboxBackend {
 
     async fn list(&self) -> Result<Vec<MailboxRecord>, BackendError> {
         debug!("Listing all mailbox records");
-        
+
         let records: Vec<MailboxRecord> = self
             .db
             .select("mailbox")
@@ -80,7 +82,7 @@ impl MailboxBackendOps for SurrealMailboxBackend {
 
     async fn delete(&self, request_id: &str) -> Result<bool, BackendError> {
         debug!(request_id = %request_id, "Deleting mailbox record");
-        
+
         let deleted: Option<MailboxRecord> = self
             .db
             .delete(("mailbox", request_id))
@@ -90,9 +92,12 @@ impl MailboxBackendOps for SurrealMailboxBackend {
         Ok(deleted.is_some())
     }
 
-    async fn get_and_delete(&self, request_id: &str) -> Result<Option<MailboxRecord>, BackendError> {
+    async fn get_and_delete(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<MailboxRecord>, BackendError> {
         debug!(request_id = %request_id, "Getting and deleting mailbox record");
-        
+
         // Get the record first
         let record: Option<MailboxRecord> = self
             .db
@@ -129,7 +134,10 @@ impl MailboxBackendOps for SurrealMailboxBackend {
             .take(0)
             .map_err(|e| BackendError::other(format!("failed to get deleted count: {}", e)))?;
 
-        info!(deleted = deleted.len(), "Cleaned up expired mailbox records");
+        info!(
+            deleted = deleted.len(),
+            "Cleaned up expired mailbox records"
+        );
         Ok(deleted.len())
     }
 }
@@ -143,7 +151,7 @@ impl SurrealQueueBackend {
     /// Create a new SurrealDB queue backend at the given path.
     pub async fn new(path: &str) -> Result<Self, BackendError> {
         info!(path = %path, "Initializing SurrealDB queue backend");
-        
+
         let db = Surreal::new::<RocksDb>(path)
             .await
             .map_err(|e| BackendError::connection(format!("failed to open SurrealDB: {}", e)))?;
@@ -151,7 +159,9 @@ impl SurrealQueueBackend {
         db.use_ns("candle_vllm")
             .use_db("queue")
             .await
-            .map_err(|e| BackendError::connection(format!("failed to select namespace/db: {}", e)))?;
+            .map_err(|e| {
+                BackendError::connection(format!("failed to select namespace/db: {}", e))
+            })?;
 
         // Create index on model and queued_at for efficient queries
         let _ = db
@@ -210,14 +220,10 @@ impl QueueBackendOps for SurrealQueueBackend {
         // Delete the selected records
         for record in &records {
             let key = Self::composite_key(record);
-            let _: Option<QueueRecord> = self
-                .db
-                .delete(("queue", &key))
-                .await
-                .map_err(|e| {
-                    error!(id = %record.id, error = %e, "Failed to delete dequeued record");
-                    BackendError::other(format!("failed to delete record: {}", e))
-                })?;
+            let _: Option<QueueRecord> = self.db.delete(("queue", &key)).await.map_err(|e| {
+                error!(id = %record.id, error = %e, "Failed to delete dequeued record");
+                BackendError::other(format!("failed to delete record: {}", e))
+            })?;
         }
 
         debug!(model = %model, count = records.len(), "Dequeued records");
@@ -226,7 +232,7 @@ impl QueueBackendOps for SurrealQueueBackend {
 
     async fn len(&self, model: &str) -> Result<usize, BackendError> {
         let model_owned = model.to_string();
-        
+
         let mut result = self
             .db
             .query("SELECT count() FROM queue WHERE model = $model GROUP ALL")
@@ -249,7 +255,7 @@ impl QueueBackendOps for SurrealQueueBackend {
     async fn list(&self, model: Option<&str>) -> Result<Vec<QueueRecord>, BackendError> {
         let records: Vec<QueueRecord> = if let Some(model) = model {
             let model_owned = model.to_string();
-            
+
             let mut result = self
                 .db
                 .query("SELECT * FROM queue WHERE model = $model ORDER BY queued_at ASC")
