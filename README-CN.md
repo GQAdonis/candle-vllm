@@ -65,7 +65,7 @@
 ### 构建Candle-vLLM
 
 ```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh #安装Rust，需要1.83.0及以上版本
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh #安装Rust，需要1.92.0及以上版本
 sudo apt install libssl-dev pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm

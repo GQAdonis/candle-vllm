@@ -20,6 +20,3 @@ terraform.rc
 
 # Rust build artifacts
 target/
-
-# Workspace lockfile (do not commit unless explicitly desired)
-Cargo.lock

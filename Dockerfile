@@ -19,11 +19,11 @@ RUN <<HEREDOC
     rm -rf /var/lib/apt/lists/*
 HEREDOC
 
-# Use the workspace-declared minimum Rust version (Rust 1.83+) instead of nightly.
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y --profile minimal
+# Standardize on a modern stable toolchain (required by some deps using Edition 2024 features).
+ARG RUST_TOOLCHAIN=1.92.0
+RUN curl https://sh.rustup.rs -sSf | bash -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN}
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup toolchain install 1.83.0
-RUN rustup default 1.83.0
+RUN rustup default ${RUST_TOOLCHAIN}
 
 WORKDIR /candle-vllm
 
@@ -31,11 +31,10 @@ COPY . .
 
 # Rayon threads are limited to minimize memory requirements in CI, avoiding OOM
 # NOTE: Avoid nightly-only `-Z` flags in Docker builds.
-# NOTE: NCCL feature has known compilation issues when combined with MPI (see DEFAULT_MODEL_FIX.md)
-# Use cuda,cudnn,mpi (without nccl) as default. Override WITH_FEATURES if nccl is needed.
+# Keep Docker builds minimal by default. Override WITH_FEATURES for nccl/mpi/cudnn/etc.
 ARG CUDA_COMPUTE_CAP=80
 ARG RAYON_NUM_THREADS=4
-ARG WITH_FEATURES="cuda,cudnn,mpi"
+ARG WITH_FEATURES="cuda"
 ENV CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
     RAYON_NUM_THREADS="${RAYON_NUM_THREADS}"
 RUN cargo build --release --workspace --locked --features "${WITH_FEATURES}"

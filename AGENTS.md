@@ -98,7 +98,7 @@ Agents SHOULD skim the relevant sections of `docs/coding-standards/README.md` be
 ## Build, Test, and Development Commands
 
 **On macOS (THIS PROJECT):**
-- Install Rust 1.83+; run `install_metal_toolchain.sh` to set up Metal development.
+- Install Rust 1.92+; run `install_metal_toolchain.sh` to set up Metal development.
 - Fast debug build: `cargo build --features metal`.
 - Release build: `cargo build --release --features metal`.
 - Run server with a model id: `cargo run --release --features metal -- --m <huggingface-id> --ui-server` (add `--isq q4k` for in-situ quantization).
@@ -140,9 +140,9 @@ See [`docs/PARKING_LOT_SCHEDULER.md`](docs/PARKING_LOT_SCHEDULER.md) for detaile
 - Prefer referencing `.example.env` and `docs/CONFIGURATION.md` when documenting new env vars or config files so users have a single source of truth.
 
 ## Recent Changes
-- 001-api-mcp-models: Added Rust 1.83+ + candle-core/candle-nn/attention-rs, tokio, serde/serde_json, axum/tower-http (server), thiserror/anyhow, uuid, tokenizers; optional CUDA/Metal feature flags.
+- 001-api-mcp-models: Added Rust 1.92+ + candle-core/candle-nn/attention-rs, tokio, serde/serde_json, axum/tower-http (server), thiserror/anyhow, uuid, tokenizers; optional CUDA/Metal feature flags.
 - 001-api-mcp-models: Added [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
 
 ## Active Technologies
-- Rust 1.83+ + candle-core/candle-nn/attention-rs, tokio, serde/serde_json, axum/tower-http (server), thiserror/anyhow, uuid, tokenizers; optional CUDA/Metal feature flags. (001-api-mcp-models)
+- Rust 1.92+ + candle-core/candle-nn/attention-rs, tokio, serde/serde_json, axum/tower-http (server), thiserror/anyhow, uuid, tokenizers; optional CUDA/Metal feature flags. (001-api-mcp-models)
 - Local filesystem for models, caches, and configs (`models.yaml`, `mcp.json`, HF download cache). (001-api-mcp-models)

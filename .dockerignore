@@ -3,7 +3,6 @@
 target
 debug
 release
-Cargo.lock
 **/*.log
 .env*
 node_modules

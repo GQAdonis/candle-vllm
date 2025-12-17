@@ -119,7 +119,7 @@ For detailed API documentation, see [LIBRARY_API.md](./LIBRARY_API.md).
 ### Build Candle-vLLM
 
 ```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh #install rust, 1.83.0+ required
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh #install rust, 1.92.0+ required
 sudo apt install libssl-dev pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
