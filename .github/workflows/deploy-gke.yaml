@@ -84,6 +84,11 @@ jobs:
           if grep -q "impersonate-service-account" "$HOME/.kube/config"; then
             sed -i '/impersonate-service-account/d' "$HOME/.kube/config"
           fi
+          if grep -q "impersonate-service-account" "$HOME/.kube/config"; then
+            echo "::error::kubeconfig still contains impersonation flags after sanitization"
+            grep -n "impersonate-service-account" "$HOME/.kube/config" || true
+            exit 1
+          fi
 
       - name: Detect kubeconfig auth mode
         id: kubeauth
