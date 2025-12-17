@@ -74,6 +74,17 @@ jobs:
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
 
+      - name: Remove gcloud impersonation from kubeconfig (CI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # If the kubeconfig was generated with `gcloud ... get-credentials --impersonate-service-account=...`,
+          # kubectl will later require the runner identity to have token-creator on that SA. In CI we're already
+          # authenticating as the target service account via `google-github-actions/auth`, so drop impersonation.
+          if grep -q "impersonate-service-account" "$HOME/.kube/config"; then
+            sed -i '/impersonate-service-account/d' "$HOME/.kube/config"
+          fi
+
       - name: Detect kubeconfig auth mode
         id: kubeauth
         shell: bash
