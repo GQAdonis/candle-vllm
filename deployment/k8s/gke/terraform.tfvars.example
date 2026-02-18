@@ -1,0 +1,25 @@
+# Copy to `terraform.tfvars` (do not commit) and set your secrets.
+
+# GKE Cluster Configuration (required for cluster.tf)
+gcp_project_id   = "YOUR_GCP_PROJECT_ID"
+cluster_name     = "client-cluster"
+cluster_location = "us-central1-a"
+
+# GPU Node Pool Configuration
+gpu_machine_type = "n1-standard-4"
+gpu_disk_size_gb = 100
+
+# Required when `enable_mcp = true` (default):
+tavily_api_key = "tvly_REPLACE_ME"
+
+# Optional overrides:
+# container_image      = "tribehealth/candle-vllm:latest"
+# tls_secret_name      = "candle-tls"
+# web_tls_secret_name  = "" # defaults to tls_secret_name
+# ingress_class_name   = "nginx"
+# gpu_nodepool         = "ai-pool"
+# gpu_accelerator      = "nvidia-tesla-t4"
+# kvcache_mem_mb       = 2048
+# max_num_seqs         = 4
+# enable_ui_server     = true
+# target_node_name     = "" # Pin to specific node if needed

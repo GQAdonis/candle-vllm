@@ -180,6 +180,7 @@ impl ExtendedEngineBuilder {
         // Create scheduler configuration
         let scheduler_config = SchedulerConfig {
             max_num_seqs: params.get_max_num_seqs(),
+            prefix_cache: crate::scheduler::prefix_cache::PrefixCacheConfig::default(),
         };
 
         // Initialize cache engines and collect model config

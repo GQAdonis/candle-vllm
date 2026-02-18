@@ -257,7 +257,7 @@ impl LLMEngine {
         // Extract shared resources before moving pipeline to executor
         let tokenizer = pipeline.tokenizer().clone();
         let model_name = pipeline.name().to_string();
-        let conversation = pipeline.get_past_conversation();
+        let conversation = pipeline.get_conversation();
         let roles = conversation.get_roles().clone();
 
         // Create the executor
@@ -994,7 +994,8 @@ impl LLMEngine {
             }
         }
 
-        Ok(conversation.get_prompt(thinking))
+        let tools_for_prompt = tools.cloned().unwrap_or_default();
+        Ok(conversation.get_prompt(thinking, &tools_for_prompt))
     }
 
     fn extract_text_content(content: &MessageContent) -> String {

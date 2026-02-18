@@ -303,6 +303,7 @@ impl InferenceEngine {
 
         let scheduler_config = SchedulerConfig {
             max_num_seqs: config.max_batch_size.unwrap_or(8),
+            prefix_cache: crate::scheduler::prefix_cache::PrefixCacheConfig::default(),
         };
 
         let mut model_config: Option<ModelConfig> = None;
