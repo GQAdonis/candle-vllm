@@ -5,36 +5,64 @@
 # - Tesla T4 is compute capability 7.5 (Turing)
 # See: docs/GKE_GPU_DEPLOYMENT.md for driver/CUDA compatibility matrix
 
-FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
+ARG CUDA_VERSION=12.9.0
+ARG UBUNTU_VERSION=22.04
+# NEW: must be passed by build script (or defaults here)
+# - CUDA major >= 13: devel
+# - else: cudnn-devel
+ARG CUDA_FLAVOR=cudnn-devel
+
+FROM docker.io/nvidia/cuda:${CUDA_VERSION}-${CUDA_FLAVOR}-ubuntu${UBUNTU_VERSION}
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        git \
-        libssl-dev \
-        pkg-config \
-        clang \
-        libclang-dev \
-        libopenmpi-dev \
-        openmpi-bin && \
+
+# Toggle for China mirror mode (0=off, 1=on)
+ARG CHINA_MIRROR=0
+
+# Build/runtime deps
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends --allow-change-held-packages \
+    ca-certificates \
+    curl \
+    git \
+    libssl-dev \
+    pkg-config \
+    clang \
+    libclang-dev \
+    libopenmpi-dev \
+    openmpi-bin; \
     rm -rf /var/lib/apt/lists/*
 
-# Standardize on a modern stable toolchain (required by some deps using Edition 2024 features).
+# Rust toolchain + optional China mirrors
 ARG RUST_TOOLCHAIN=1.92.0
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN}
+RUN set -eux; \
+    if [ "${CHINA_MIRROR}" = "1" ]; then \
+    export RUSTUP_UPDATE_ROOT="https://mirrors.ustc.edu.cn/rust-static/rustup"; \
+    export RUSTUP_DIST_SERVER="https://mirrors.tuna.tsinghua.edu.cn/rustup"; \
+    fi; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN}; \
+    if [ "${CHINA_MIRROR}" = "1" ]; then \
+    mkdir -p /root/.cargo; \
+    echo "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static" >> /root/.cargo/env; \
+    printf '%s\n' \
+    '[source.crates-io]' \
+    'replace-with = "ustc"' \
+    '' \
+    '[source.ustc]' \
+    'registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"' \
+    '' \
+    '[registries.ustc]' \
+    'index = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"' \
+    > /root/.cargo/config.toml; \
+    fi
+
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup default ${RUST_TOOLCHAIN}
 
 WORKDIR /candle-vllm
-
 COPY . .
 
-# Rayon threads are limited to minimize memory requirements in CI, avoiding OOM
-# NOTE: Avoid nightly-only `-Z` flags in Docker builds.
-# Keep Docker builds minimal by default. Override WITH_FEATURES for nccl/mpi/cudnn/etc.
-#
 # CUDA_COMPUTE_CAP: Set based on your target GPU architecture:
 #   - 75: Tesla T4, Quadro RTX series (Turing)
 #   - 80: A100, A30 (Ampere)
@@ -44,35 +72,26 @@ COPY . .
 ARG CUDA_COMPUTE_CAP=75
 ARG RAYON_NUM_THREADS=4
 ARG WITH_FEATURES="cuda"
+
 ENV CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
     RAYON_NUM_THREADS="${RAYON_NUM_THREADS}"
-RUN cargo build --release --workspace --locked --features "${WITH_FEATURES}"
 
-FROM docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 AS base
+RUN set -eux; \
+    cargo build --release --workspace --features "${WITH_FEATURES}"; \
+    install -Dm755 target/release/candle-vllm /usr/local/bin/candle-vllm; \
+    cargo clean
+
+# Restore libnccl.so symlink if missing (arch-agnostic)
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    libdir="/usr/lib/${arch}-linux-gnu"; \
+    if [ ! -e "${libdir}/libnccl.so" ] && [ -e "${libdir}/libnccl.so.2" ]; then \
+    ln -s libnccl.so.2 "${libdir}/libnccl.so"; \
+    fi
+
 ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80
 
-ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        openmpi-bin \
-        libssl3 && \
-    rm -rf /var/lib/apt/lists/*
-
-FROM base
-
-COPY --from=builder /candle-vllm/target/release/candle-vllm /usr/local/bin/candle-vllm
-RUN chmod +x /usr/local/bin/candle-vllm
-
-# Some runtime images may not include the `libnccl.so` linker symlink.
-# If NCCL is installed, restore it so `-lnccl` works at runtime.
-RUN if [ ! -e /usr/lib/x86_64-linux-gnu/libnccl.so ] && [ -e /usr/lib/x86_64-linux-gnu/libnccl.so.2 ]; then \
-    ln -s /usr/lib/x86_64-linux-gnu/libnccl.so.2 /usr/lib/x86_64-linux-gnu/libnccl.so; \
-    fi
-
 EXPOSE 80
 
-# Default to serving the OpenAI-compatible API on $PORT.
 CMD ["bash", "-lc", "exec /usr/local/bin/candle-vllm --h 0.0.0.0 --p ${PORT} --d 0"]

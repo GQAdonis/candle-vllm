@@ -16,6 +16,7 @@ pub mod openai;
 pub mod parking_lot;
 pub mod prompt_cache;
 pub mod scheduler;
+pub mod tools;
 pub mod vision;
 pub use attention_rs::{InputMetadata, PagedAttention};
 

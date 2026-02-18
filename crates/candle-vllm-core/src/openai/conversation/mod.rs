@@ -25,9 +25,10 @@ pub trait Conversation {
         &self,
         add_generation_prompt: bool,
         enable_thinking: bool,
+        tools: &Vec<Tool>,
     ) -> Result<String, ApplyChatTemplateError>;
 
-    fn get_prompt(&mut self, thinking: bool) -> String;
+    fn get_prompt(&mut self, thinking: bool, tools: &Vec<Tool>) -> String;
 
     fn clear_message(&mut self);
 

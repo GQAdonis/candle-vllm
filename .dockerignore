@@ -1,13 +1,30 @@
-.git
-.github
-target
-debug
-release
+# Rust build artifacts
+target/
+**/target/
+
+# Cargo download/cache
+.cargo/
+**/.cargo/
+
+# Git + editor noise
+.git/
+.github/
+.gitignore
+**/.DS_Store
+**/.idea/
+**/.vscode/
+
+# Python caches
+**/__pycache__/
+**/*.pyc
+
+# Logs / temp
 **/*.log
+tmp/
+node_modules/
+
+# Environment files
 .env*
-node_modules
-.vscode
-.idea
-__pycache__
-*.pyc
+
+# Generated kernel source
 kernels/src/lib.rs

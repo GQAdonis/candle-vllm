@@ -15,9 +15,9 @@ use std::rc::Rc;
 #[allow(dead_code)]
 pub struct FusedMoe {
     gate: Linear,
-    gate_up_w: Tensor,
+    gate_w: Tensor,
+    up_w: Tensor,
     down_w: Tensor,
-    w_size_n: usize,
     act: candle_nn::Activation,
     norm_topk_prob: bool,
     num_experts_per_tok: usize,
@@ -47,13 +47,14 @@ impl FusedMoe {
         )?;
 
         let experts_vb = vb.pp("experts");
-        let mut gate_up_experts = Vec::with_capacity(num_experts);
+        let mut gate_experts = Vec::with_capacity(num_experts);
+        let mut up_experts = Vec::with_capacity(num_experts);
         let mut down_experts = Vec::with_capacity(num_experts);
 
         //pack experts
         for i in 0..num_experts {
             let experts_vb = experts_vb.pp(format!("{}", i).as_str());
-            let (gate_up_expert, down_expert) = {
+            let (gate_expert, up_expert, down_expert) = {
                 // n x k format
                 let gate_expert = experts_vb.pp("gate_proj").get_with_hints(
                     (moe_cfg.moe_intermediate_size, cfg.hidden_size),
@@ -70,26 +71,25 @@ impl FusedMoe {
                     "weight",
                     shard(1, comm.rank(), comm.world_size()),
                 )?;
-                //pack gate_proj and up_proj
-                let gate_up_expert = Tensor::cat(&[&gate_expert, &up_expert], 0)?;
 
-                (gate_up_expert, down_expert)
+                (gate_expert, up_expert, down_expert)
             };
 
-            gate_up_experts.push(gate_up_expert);
+            gate_experts.push(gate_expert);
+            up_experts.push(up_expert);
             down_experts.push(down_expert);
         }
 
-        let gate_up_w = Tensor::stack(&gate_up_experts, 0)?;
+        let gate_w = Tensor::stack(&gate_experts, 0)?;
+        let up_w = Tensor::stack(&up_experts, 0)?;
         let down_w = Tensor::stack(&down_experts, 0)?;
         let world_size = comm.world_size();
-        let w_size_n = gate_up_w.dim(1)? / 2;
 
         Ok(Self {
             gate,
-            gate_up_w,
+            gate_w,
+            up_w,
             down_w,
-            w_size_n,
             act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -125,9 +125,9 @@ impl FusedMoe {
         };
 
         //out (M, top_k, N)
-        let gate_up = moe::moe_gemm(
+        let gate = moe::moe_gemm(
             &xs,
-            &self.gate_up_w,
+            &self.gate_w,
             &None,
             &sorted_token_ids,
             &expert_ids,
@@ -135,15 +135,18 @@ impl FusedMoe {
             is_prefill,
         )?;
 
-        let gate = gate_up
-            .narrow(candle_core::D::Minus1, 0, self.w_size_n)?
-            .contiguous()?;
-        let up = gate_up
-            .narrow(candle_core::D::Minus1, self.w_size_n, self.w_size_n)?
-            .contiguous()?;
+        let up = moe::moe_gemm(
+            &xs,
+            &self.up_w,
+            &None,
+            &sorted_token_ids,
+            &expert_ids,
+            self.num_experts_per_tok,
+            is_prefill,
+        )?;
 
         //(M * top_k, N // 2)
-        let down_inputs = (up * gate.apply(&self.act)?)?.reshape(((), self.w_size_n))?;
+        let down_inputs = (up * gate.apply(&self.act)?)?;
 
         //view(M, top_k, K) -> sum -> (M, K)
         let mut ys = moe::moe_gemm(
@@ -167,8 +170,8 @@ impl FusedMoe {
 
 pub struct FusedMoeISQ {
     gate: Linear,
-    gate_up_experts: QTensor,
-    w_size_n: usize,
+    gate_experts: QTensor,
+    up_experts: QTensor,
     down_experts: QTensor,
     act: candle_nn::Activation,
     norm_topk_prob: bool,
@@ -324,13 +327,9 @@ impl FusedMoeISQ {
         let gate_experts = Tensor::stack(&gate_experts, 0)?;
         let up_experts = Tensor::stack(&up_experts, 0)?;
         let down_experts = Tensor::stack(&down_experts, 0)?;
-
-        // pack gate_proj and up_proj
-        let gate_up_experts = Tensor::cat(&[gate_experts, up_experts], candle_core::D::Minus2)?;
-        let w_size_n = gate_up_experts.dim(1)? / 2;
-
         // in-situ quantization for using fused moe kernel
-        let gate_up_experts = QTensor::quantize(&gate_up_experts, quant_type).unwrap();
+        let gate_experts = QTensor::quantize(&gate_experts, quant_type).unwrap();
+        let up_experts = QTensor::quantize(&up_experts, quant_type).unwrap();
 
         //down_experts requires higher precision
         let down_experts = QTensor::quantize(&down_experts, GgmlDType::Q8_0).unwrap();
@@ -338,8 +337,8 @@ impl FusedMoeISQ {
 
         Ok(Self {
             gate,
-            gate_up_experts,
-            w_size_n,
+            gate_experts,
+            up_experts,
             down_experts,
             act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
@@ -380,9 +379,9 @@ impl FusedMoeISQ {
         };
 
         let ys = {
-            let gate_up = moe::moe_gemm_gguf(
+            let gate = moe::moe_gemm_gguf(
                 &xs,
-                &self.gate_up_experts,
+                &self.gate_experts,
                 &None,
                 &sorted_token_ids,
                 &expert_ids,
@@ -390,12 +389,16 @@ impl FusedMoeISQ {
                 is_prefill,
                 self.dtype,
             )?;
-            let gate = gate_up
-                .narrow(candle_core::D::Minus1, 0, self.w_size_n)?
-                .contiguous()?;
-            let up = gate_up
-                .narrow(candle_core::D::Minus1, self.w_size_n, self.w_size_n)?
-                .contiguous()?;
+            let up = moe::moe_gemm_gguf(
+                &xs,
+                &self.up_experts,
+                &None,
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                is_prefill,
+                self.dtype,
+            )?;
             let down_inputs = (up * gate.apply(&self.act)?)?;
             moe::moe_gemm_gguf(
                 &down_inputs,
@@ -416,5 +419,292 @@ impl FusedMoeISQ {
             ys = self.all_reduce.apply(&ys)?;
         }
         ys.to_dtype(original_dtype)
+    }
+}
+
+/// FP8 Mixture of Experts layer with block-wise scales
+pub struct FusedMoeFp8 {
+    gate: Linear,
+    gate_experts: Tensor,
+    gate_experts_scale: Tensor,
+    up_experts: Tensor,
+    up_experts_scale: Tensor,
+    down_experts: Tensor,
+    down_experts_scale: Tensor,
+    act: candle_nn::Activation,
+    norm_topk_prob: bool,
+    num_experts_per_tok: usize,
+    all_reduce: AllReduce,
+    world_size: usize,
+    dtype: DType,
+    block_size: Vec<usize>,
+}
+
+impl FusedMoeFp8 {
+    pub fn new(
+        cfg: &Config,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+        dtype: DType,
+        quant_cfg: &crate::openai::models::QuantConfig,
+    ) -> Result<Self> {
+        let moe_cfg = if let Some(MoEConfig::QwenMoE(moe_cfg)) = &cfg.moe_config {
+            moe_cfg.clone()
+        } else {
+            candle::bail!("Expected QwenMoEConfig")
+        };
+        let num_experts = moe_cfg.num_experts.unwrap();
+
+        let block_size = quant_cfg
+            .weight_block_size
+            .clone()
+            .unwrap_or(vec![128, 128]);
+        if block_size.len() != 2 {
+            candle::bail!("FusedMoeFp8: weight_block_size must have 2 elements");
+        }
+        let by = block_size[0];
+        let bx = block_size[1];
+
+        let gate_ws = vb.pp("gate").get_with_hints_dtype(
+            (num_experts, cfg.hidden_size),
+            "weight",
+            Shard::default(),
+            dtype,
+        )?;
+        let gate = Linear::new(gate_ws, None);
+
+        let experts_vb = vb.pp("experts");
+
+        // Per-expert loading
+        let mut gate_experts = Vec::with_capacity(num_experts);
+        let mut gate_experts_scale = Vec::with_capacity(num_experts);
+        let mut up_experts = Vec::with_capacity(num_experts);
+        let mut up_experts_scale = Vec::with_capacity(num_experts);
+        let mut down_experts = Vec::with_capacity(num_experts);
+        let mut down_experts_scale = Vec::with_capacity(num_experts);
+
+        for i in 0..num_experts {
+            let expert_vb = experts_vb.pp(format!("{}", i).as_str());
+
+            // Gate proj
+            let gate_weight = expert_vb.pp("gate_proj").get_with_hints_dtype(
+                (moe_cfg.moe_intermediate_size, cfg.hidden_size),
+                "weight",
+                shard(0, comm.rank(), comm.world_size()),
+                DType::U8,
+            )?;
+            let sn = (moe_cfg.moe_intermediate_size + by - 1) / by;
+            let sk = (cfg.hidden_size + bx - 1) / bx;
+            let gate_s = match expert_vb.pp("gate_proj").get_with_hints_dtype(
+                (sn, sk),
+                "weight_scale",
+                shard(0, comm.rank(), comm.world_size()),
+                DType::F32,
+            ) {
+                Ok(s) => s,
+                Err(_) => expert_vb
+                    .pp("gate_proj")
+                    .get_with_hints_dtype(
+                        (sn, sk),
+                        "weight_scale_inv",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )
+                    .map_err(|_| {
+                        candle::Error::Msg(
+                            format!(
+                                "FusedMoeFp8: Missing weight_scale for expert {} gate_proj",
+                                i
+                            )
+                            .into(),
+                        )
+                    })?,
+            };
+
+            // Up proj
+            let up_weight = expert_vb.pp("up_proj").get_with_hints_dtype(
+                (moe_cfg.moe_intermediate_size, cfg.hidden_size),
+                "weight",
+                shard(0, comm.rank(), comm.world_size()),
+                DType::U8,
+            )?;
+            let up_s = match expert_vb.pp("up_proj").get_with_hints_dtype(
+                (sn, sk),
+                "weight_scale",
+                shard(0, comm.rank(), comm.world_size()),
+                DType::F32,
+            ) {
+                Ok(s) => s,
+                Err(_) => expert_vb
+                    .pp("up_proj")
+                    .get_with_hints_dtype(
+                        (sn, sk),
+                        "weight_scale_inv",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )
+                    .map_err(|_| {
+                        candle::Error::Msg(
+                            format!("FusedMoeFp8: Missing weight_scale for expert {} up_proj", i)
+                                .into(),
+                        )
+                    })?,
+            };
+
+            // Down proj
+            let down_sn = (cfg.hidden_size + by - 1) / by;
+            let down_sk = (moe_cfg.moe_intermediate_size + bx - 1) / bx;
+            let down_weight = expert_vb.pp("down_proj").get_with_hints_dtype(
+                (cfg.hidden_size, moe_cfg.moe_intermediate_size),
+                "weight",
+                shard(1, comm.rank(), comm.world_size()),
+                DType::U8,
+            )?;
+            let down_s = match expert_vb.pp("down_proj").get_with_hints_dtype(
+                (down_sn, down_sk),
+                "weight_scale",
+                shard(1, comm.rank(), comm.world_size()),
+                DType::F32,
+            ) {
+                Ok(s) => s,
+                Err(_) => expert_vb
+                    .pp("down_proj")
+                    .get_with_hints_dtype(
+                        (down_sn, down_sk),
+                        "weight_scale_inv",
+                        shard(1, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )
+                    .map_err(|_| {
+                        candle::Error::Msg(
+                            format!(
+                                "FusedMoeFp8: Missing weight_scale for expert {} down_proj",
+                                i
+                            )
+                            .into(),
+                        )
+                    })?,
+            };
+
+            gate_experts.push(gate_weight);
+            gate_experts_scale.push(gate_s);
+            up_experts.push(up_weight);
+            up_experts_scale.push(up_s);
+            down_experts.push(down_weight);
+            down_experts_scale.push(down_s);
+        }
+
+        Ok(Self {
+            gate,
+            gate_experts: Tensor::stack(&gate_experts, 0)?,
+            gate_experts_scale: Tensor::stack(&gate_experts_scale, 0)?,
+            up_experts: Tensor::stack(&up_experts, 0)?,
+            up_experts_scale: Tensor::stack(&up_experts_scale, 0)?,
+            down_experts: Tensor::stack(&down_experts, 0)?,
+            down_experts_scale: Tensor::stack(&down_experts_scale, 0)?,
+            act: candle_nn::Activation::Silu,
+            norm_topk_prob: moe_cfg.norm_topk_prob,
+            num_experts_per_tok: moe_cfg.num_experts_per_tok,
+            all_reduce: AllReduce::new(comm.clone()),
+            world_size: comm.world_size(),
+            dtype,
+            block_size: vec![by, bx],
+        })
+    }
+
+    pub fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
+        let (num_tokens, hidden_dim) = xs.dims2()?;
+        let router_logits = self.gate.forward(&xs)?;
+
+        let (mut topk_weights, topk_ids) = attention_rs::topk::topk_softmax(
+            &router_logits.to_dtype(DType::F32)?,
+            self.num_experts_per_tok,
+        )?;
+
+        if self.norm_topk_prob {
+            topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
+        }
+
+        let (expert_ids, sorted_token_ids) = if is_prefill {
+            #[cfg(feature = "cuda")]
+            {
+                use attention_rs::sort::ArgSortOp;
+                topk_ids.flatten_all()?.sort(true)?
+            }
+            #[cfg(not(feature = "cuda"))]
+            topk_ids.flatten_all()?.sort_last_dim(true)?
+        } else {
+            topk_ids.flatten_all()?.sort_last_dim(true)?
+        };
+
+        let xs = if xs.dtype() == DType::F32 {
+            xs.to_dtype(DType::BF16)?
+        } else {
+            xs.clone()
+        };
+
+        #[cfg(feature = "cutlass")]
+        let (gate, up) = {
+            let g = moe::moe_gemm_fp8(
+                &xs,
+                &self.gate_experts,
+                &self.gate_experts_scale,
+                &None,
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                self.block_size[0],
+                self.block_size[1],
+                is_prefill,
+            )?;
+            let u = moe::moe_gemm_fp8(
+                &xs,
+                &self.up_experts,
+                &self.up_experts_scale,
+                &None,
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                self.block_size[0],
+                self.block_size[1],
+                is_prefill,
+            )?;
+            (g, u)
+        };
+
+        #[cfg(not(feature = "cutlass"))]
+        let (_gate, _up): (Tensor, Tensor) = {
+            candle_core::bail!(
+                "FP8 MoE inference requires the `cutlass` feature flag. \
+                 Rebuild with `--features cutlass`."
+            );
+        };
+
+        #[cfg(feature = "cutlass")]
+        let down_inputs = (up * gate.apply(&self.act)?)?;
+
+        #[cfg(feature = "cutlass")]
+        let mut ys = moe::moe_gemm_fp8(
+            &down_inputs,
+            &self.down_experts,
+            &self.down_experts_scale,
+            &Some(topk_weights),
+            &sorted_token_ids,
+            &expert_ids,
+            self.num_experts_per_tok,
+            self.block_size[0],
+            self.block_size[1],
+            is_prefill,
+        )?
+        .reshape((num_tokens, (), hidden_dim))?
+        .sum(D::Minus2)?;
+
+        #[cfg(not(feature = "cutlass"))]
+        let mut ys: Tensor = unreachable!();
+
+        if self.world_size > 1 {
+            ys = self.all_reduce.apply(&ys)?;
+        }
+        Ok(ys.to_dtype(self.dtype)?)
     }
 }

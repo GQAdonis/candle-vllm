@@ -1086,6 +1086,7 @@ or switching to a smaller model."
         pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
+            prefix_cache: candle_vllm_core::scheduler::prefix_cache::PrefixCacheConfig::default(),
         },
         &cache_config,
         &config,
@@ -1100,6 +1101,7 @@ or switching to a smaller model."
         pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
+            prefix_cache: candle_vllm_core::scheduler::prefix_cache::PrefixCacheConfig::default(),
         },
         &cache_config,
         &config,

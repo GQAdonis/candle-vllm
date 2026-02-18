@@ -882,6 +882,52 @@ impl ChatCompletionRequest {
 }
 
 // ============================================================================
+// Embedding types
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+pub enum EncodingFormat {
+    Float,
+    Base64,
+}
+
+impl Default for EncodingFormat {
+    fn default() -> Self {
+        Self::Float
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+pub enum EmbeddingType {
+    Last,
+    Mean,
+}
+
+impl Default for EmbeddingType {
+    fn default() -> Self {
+        Self::Mean
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    String(String),
+    MultiString(Vec<String>),
+    Tokens(Vec<u32>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingRequest {
+    pub model: Option<String>,
+    pub input: EmbeddingInput,
+    #[serde(default)]
+    pub encoding_format: EncodingFormat,
+    #[serde(default)]
+    pub embedding_type: EmbeddingType,
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
