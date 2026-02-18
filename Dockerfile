@@ -1,15 +1,14 @@
 # syntax=docker/dockerfile:1
 #
 # CUDA Version Selection:
-# - Use CUDA 12.2 for compatibility with GKE GPU driver 535.x (default on most GKE clusters)
-# - Use CUDA 12.8+ only if your cluster has driver 560+ installed
+# - CUDA 12.8 requires driver 560+ (your GKE cluster has 580.x)
+# - Tesla T4 is compute capability 7.5 (Turing)
 # See: docs/GKE_GPU_DEPLOYMENT.md for driver/CUDA compatibility matrix
 
-FROM docker.io/nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 AS builder
+FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN <<HEREDOC
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -20,9 +19,7 @@ RUN <<HEREDOC
         libclang-dev \
         libopenmpi-dev \
         openmpi-bin && \
-
     rm -rf /var/lib/apt/lists/*
-HEREDOC
 
 # Standardize on a modern stable toolchain (required by some deps using Edition 2024 features).
 ARG RUST_TOOLCHAIN=1.92.0
@@ -51,22 +48,18 @@ ENV CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
     RAYON_NUM_THREADS="${RAYON_NUM_THREADS}"
 RUN cargo build --release --workspace --locked --features "${WITH_FEATURES}"
 
-FROM docker.io/nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04 AS base
+FROM docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 AS base
 ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80
 
 ARG DEBIAN_FRONTEND=noninteractive
-
-RUN <<HEREDOC
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         openmpi-bin \
         libssl3 && \
-
     rm -rf /var/lib/apt/lists/*
-HEREDOC
 
 FROM base
 

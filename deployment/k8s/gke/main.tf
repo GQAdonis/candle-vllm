@@ -128,6 +128,16 @@ resource "kubernetes_deployment_v1" "app" {
                     values   = [match_expressions.value]
                   }
                 }
+
+                # If target_node_name is set, pin to that specific node
+                dynamic "match_expressions" {
+                  for_each = var.target_node_name != "" ? [1] : []
+                  content {
+                    key      = "kubernetes.io/hostname"
+                    operator = "In"
+                    values   = [var.target_node_name]
+                  }
+                }
               }
             }
           }
@@ -205,12 +215,12 @@ resource "kubernetes_deployment_v1" "app" {
             requests = {
               cpu              = var.cpu_request
               memory           = var.memory_request
-              "nvidia.com/gpu" = tostring(var.gpu_count)
+              "nvidia.com/gpu" = var.gpu_count
             }
             limits = {
               cpu              = var.cpu_limit
               memory           = var.memory_limit
-              "nvidia.com/gpu" = tostring(var.gpu_count)
+              "nvidia.com/gpu" = var.gpu_count
             }
           }
 

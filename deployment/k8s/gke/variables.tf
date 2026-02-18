@@ -67,13 +67,19 @@ variable "ingress_class_name" {
 variable "gpu_nodepool" {
   type        = string
   description = "GKE nodepool name for GPU scheduling."
-  default     = "ai-pool-gpu"
+  default     = ""
+}
+
+variable "gpu_accelerator" {
+  type        = string
+  description = "GKE accelerator label value used for GPU scheduling (cloud.google.com/gke-accelerator)."
+  default     = "nvidia-tesla-t4"
 }
 
 variable "gpu_count" {
-  type        = number
-  description = "Number of GPUs to request/limit."
-  default     = 1
+  type        = string
+  description = "Number of GPUs to request/limit (can be fractional for time-sharing)."
+  default     = "1"
 }
 
 variable "cpu_request" {
@@ -146,4 +152,41 @@ variable "tavily_api_key" {
     condition     = (!var.enable_mcp) || (length(var.tavily_api_key) > 0)
     error_message = "tavily_api_key must be set when enable_mcp=true."
   }
+}
+
+variable "target_node_name" {
+  type        = string
+  description = "Specific node name to schedule the workload on. If set, adds a node affinity constraint."
+  default     = ""
+}
+
+# GKE Cluster Infrastructure Variables
+
+variable "gcp_project_id" {
+  type        = string
+  description = "GCP project ID where the GKE cluster is located."
+}
+
+variable "cluster_name" {
+  type        = string
+  description = "Name of the existing GKE cluster."
+  default     = "client-cluster"
+}
+
+variable "cluster_location" {
+  type        = string
+  description = "Location (region or zone) of the GKE cluster."
+  default     = "us-central1-a"
+}
+
+variable "gpu_machine_type" {
+  type        = string
+  description = "Machine type for GPU node pools."
+  default     = "n1-standard-4"
+}
+
+variable "gpu_disk_size_gb" {
+  type        = number
+  description = "Disk size in GB for GPU nodes."
+  default     = 100
 }

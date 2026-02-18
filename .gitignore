@@ -1,6 +1,7 @@
 # Local kubeconfig files (never commit)
 *.kubeconfig
 client-cluster.kubeconfig
+KUBECONFIG_B64.txt
 
 # gcloud auth plugin cache
 gke_gcloud_auth_plugin_cache
@@ -10,6 +11,11 @@ gke_gcloud_auth_plugin_cache
 .tofu/
 *.tfstate
 *.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+TFPLAN
+*.tfplan
 crash.log
 override.tf
 override.tf.json
