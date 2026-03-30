@@ -171,6 +171,10 @@ impl DefaultConversation {
         });
     }
 
+    pub fn append_template_message(&mut self, message: Message) {
+        self.messages.push(message);
+    }
+
     pub fn get_roles(&self) -> &(String, String) {
         &self.roles
     }

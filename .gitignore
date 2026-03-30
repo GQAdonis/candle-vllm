@@ -25,4 +25,21 @@ override.tf.json
 terraform.rc
 
 # Rust build artifacts
-target/
+/target
+/Cargo.lock
+
+# Model and cache artifacts
+.hf_token
+__pycache__
+*.ptx
+libpagedattention.a
+*.gz
+kernels/src/lib.rs
+*.log
+*.lock
+
+# Local agent/editor state
+launch.json
+CLAUDE.md
+AGENTS.md
+.claude/

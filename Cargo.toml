@@ -43,14 +43,11 @@ lazy_static = "1.4.0"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 mpi = "0.8.1"
-# rmcp = { version = "0.10.0", default-features = false, features = ["client", "server", "macros", "transport-child-process", "transport-streamable-http-client", "transport-sse-client", "transport-io"] }
-# rmcp-macros = "0.10.0"
-# NOTE: rmcp 0.10.0 has missing base64 dependency - this is an upstream issue
 parking_lot = "0.12"
 crossbeam = "0.8"
 rand = "0.9.0"
 rayon = "1.10.0"
-regex = "1.10"
+regex = "1.12.2"
 rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", version = "0.2.2" }
 serde = { version = "1.0.190", features = ["serde_derive"] }
 serde-big-array = "0.5.1"
@@ -76,9 +73,13 @@ which = "8.0.0"
 ahash = "0.8.11"
 indicatif = "0.18.3"
 base64 = "0.22.1"
-reqwest = { version = "0.12.24", features = ["json"] }
+reqwest = { version = "0.12.24", features = ["json", "rustls-tls"] }
 schemars = "1.1.0"
 paste = "1.0"
+image = { version = "0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+bytemuck = "1.23.2"
+openai-protocol = "1.2.0"
+tool-parser = "1.1.1"
 
 # Prometheus parking-lot scheduler for resource-constrained pools
 prometheus_parking_lot = { git = "https://github.com/Prometheus-AGS/prometheus-parking-lot-rs.git" }
@@ -89,6 +90,15 @@ version = "0.5.1"
 edition = "2021"
 license = "MIT"
 description = "Candle-based vLLM server and libraries"
+default-run = "candle-vllm"
+
+[lib]
+name = "candle_vllm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "candle-vllm"
+path = "src/main.rs"
 
 [dependencies]
 candle-vllm-server = { path = "crates/candle-vllm-server" }
@@ -101,10 +111,12 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [features]
 accelerate = ["candle-vllm-core/accelerate", "candle-vllm-openai/accelerate", "candle-vllm-server/accelerate"]
 cuda = ["candle-vllm-core/cuda", "candle-vllm-openai/cuda", "candle-vllm-server/cuda"]
+cutlass = ["cuda"]
 metal = ["candle-vllm-core/metal", "candle-vllm-openai/metal", "candle-vllm-server/metal"]
 cudnn = ["candle-vllm-core/cudnn"]
 flash-attn = ["candle-vllm-core/flash-attn", "candle-vllm-openai/flash-attn"]
 flash-decoding = ["candle-vllm-core/flash-decoding", "candle-vllm-openai/flash-decoding"]
+flashinfer = []
 mkl = ["candle-vllm-core/mkl"]
 nccl = ["candle-vllm-core/nccl", "candle-vllm-openai/nccl", "candle-vllm-server/nccl"]
 mpi = ["candle-vllm-core/mpi", "candle-vllm-openai/mpi", "candle-vllm-server/mpi"]
