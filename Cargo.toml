@@ -22,12 +22,12 @@ rust-version = "1.92"
 anyhow = "1.0.75"
 async-trait = "0.1.77"
 async-stream = "0.3"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version = "0.1.7", rev = "753f0a6" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version = "0.4.3", rev = "8181868" }
 axum = { version = "0.8.7", features = ["tokio"] }
 chrono = "0.4.41"
 clap = { version = "4.4.7", features = ["derive"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
 derive_more = "0.99.17"
 dirs = "6.0.0"
 dyn-fmt = "0.4.0"
@@ -54,14 +54,14 @@ serde-big-array = "0.5.1"
 serde_json = "1.0.108"
 serde_yaml = "0.9"
 thiserror = "2.0.17"
-tokenizers = "0.22.2"
+tokenizers = "0.21.2"
 tokio = { version = "1.38.0", features = ["sync"] }
 tower-http = { version = "0.6.7", features = ["cors"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 utoipa = { version = "5.4.0", features = ["axum_extras"] }
 uuid = { version = "1.5.0", features = ["v4"] }
-bincode = { version = "2.0.1" }
+bincode = { version = "2.0.1", features = ["serde"] }
 ftail = "0.3.1"
 tqdm = "0.8.0"
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
@@ -73,7 +73,7 @@ which = "8.0.0"
 ahash = "0.8.11"
 indicatif = "0.18.3"
 base64 = "0.22.1"
-reqwest = { version = "0.12.24", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.24", features = ["blocking", "json", "rustls-tls"] }
 schemars = "1.1.0"
 paste = "1.0"
 image = { version = "0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
@@ -105,8 +105,23 @@ candle-vllm-server = { path = "crates/candle-vllm-server" }
 candle-vllm-core = { path = "crates/candle-vllm-core" }
 candle-vllm-openai = { path = "crates/candle-vllm-openai" }
 candle-vllm-responses = { path = "crates/candle-vllm-responses" }
+attention-rs = { workspace = true }
+candle-core = { workspace = true }
+crossbeam = { workspace = true }
+futures = { workspace = true }
+openai-protocol = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
 rmcp = "0.10.0"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokenizers = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tool-parser = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
 
 [features]
 accelerate = ["candle-vllm-core/accelerate", "candle-vllm-openai/accelerate", "candle-vllm-server/accelerate"]

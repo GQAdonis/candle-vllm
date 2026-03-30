@@ -182,6 +182,7 @@ impl GGUFLLaMa {
             custom_stop_tokens: Some(vec!["<|end_of_text|>".to_string()]),
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quant: None,
             quantization_config: None,
             moe_config: None,
             isq_quant: None,

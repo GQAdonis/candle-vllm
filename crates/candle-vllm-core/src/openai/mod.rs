@@ -9,7 +9,6 @@ pub use self::pipelines::{LLMEngine, SchedulerPoolConfig};
 use self::responses::APIError;
 use crate::openai::requests::{Tool, ToolChoice};
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
-use bincode::{Decode, Encode};
 use candle_core::Device;
 use either::Either;
 use serde::{Deserialize, Serialize};
@@ -161,7 +160,7 @@ pub struct OpenAIServerData {
     pub vision_tool: Option<Arc<crate::openai::local_vision_tool::LocalVisionModelTool>>,
 }
 
-#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TaskData {
     pub seq_id: usize,
     pub group_id: usize,

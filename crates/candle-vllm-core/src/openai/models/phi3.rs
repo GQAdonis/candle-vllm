@@ -288,6 +288,7 @@ mod tests {
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             moe_config: None,
+            quant: None,
             quantization_config: None,
             isq_quant: None,
             fp8_kvcache: None,

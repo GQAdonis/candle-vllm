@@ -122,6 +122,8 @@ impl InferenceJob {
 
         Ok(InputMetadata {
             is_prefill: self.is_prefill,
+            sequence_ids: None,
+            mamba_slot_mapping: None,
             slot_mapping: candle_core::Tensor::zeros(seq_len, candle_core::DType::I64, device)?,
             block_tables: None,
             context_lens: None,
@@ -130,6 +132,9 @@ impl InferenceJob {
             max_seqlen_q: self.max_seqlen_q,
             max_seqlen_k: self.max_seqlen_k,
             max_context_len: self.max_context_len,
+            disable_flash_attn: None,
+            seqlens: None,
+            flashinfer_metadata: None,
         })
     }
 }

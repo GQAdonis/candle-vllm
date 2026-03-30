@@ -256,6 +256,8 @@ impl InferenceEngine {
             None,
             Some(config.model_path.to_string_lossy().into_owned()),
             None,
+            None,
+            None,
         );
         let (paths, gguf) = loader
             .prepare_model_weights(None, None)
@@ -299,6 +301,7 @@ impl InferenceEngine {
             fully_init: true,
             dtype: kv_cache_dtype,
             kvcache_mem_gpu: config.kv_cache_memory.unwrap_or(4096),
+            mamba_cache_budget_bytes: 0,
         };
 
         let scheduler_config = SchedulerConfig {

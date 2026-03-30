@@ -7,8 +7,6 @@
 use candle::utils::{cuda_is_available, metal_is_available};
 use candle::{Device, Result};
 use candle_core as candle;
-use std::path::Path;
-use tracing::warn;
 
 // Re-export entire crates for backward compatibility
 pub use candle_vllm_core as core;
@@ -17,14 +15,13 @@ pub use candle_vllm_responses as responses;
 pub use candle_vllm_server as server;
 
 // Re-export core sub-modules so `crate::backend`, `crate::openai`, `crate::scheduler` still work
-pub use candle_vllm_core::{backend, openai, scheduler};
 pub use attention_rs::{InputMetadata, PagedAttention};
+pub use candle_vllm_core::{backend, openai, scheduler};
 
 // Re-export core API types
 pub use candle_vllm_core::api::{
     EngineConfig, EngineConfigBuilder, Error, FinishReason, GenerationOutput, GenerationParams,
-    GenerationStats, InferenceEngine, InferenceEngineBuilder, ModelInfo,
-    Result as EngineResult,
+    GenerationStats, InferenceEngine, InferenceEngineBuilder, ModelInfo, Result as EngineResult,
 };
 
 // Re-export common types from core
@@ -66,13 +63,15 @@ pub fn new_device(ordinal: usize) -> Result<Device> {
     } else {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            warn!(
+            tracing::warn!(
                 "Running on CPU, to run on GPU(metal), build this example with `--features metal`"
             );
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
-            warn!("Running on CPU, to run on GPU, build this example with `--features cuda`");
+            tracing::warn!(
+                "Running on CPU, to run on GPU, build this example with `--features cuda`"
+            );
         }
         Ok(Device::Cpu)
     }

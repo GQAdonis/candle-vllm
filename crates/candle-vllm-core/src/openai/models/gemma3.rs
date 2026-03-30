@@ -184,6 +184,7 @@ impl Gemma3 {
             custom_stop_tokens: None,
             attn_logit_softcapping: config.text_config.attn_logit_softcapping,
             final_logit_softcapping: config.text_config.final_logit_softcapping,
+            quant: quant.clone(),
             quantization_config: config
                 .text_config
                 .quantization_config

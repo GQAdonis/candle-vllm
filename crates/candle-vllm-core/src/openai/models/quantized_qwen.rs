@@ -103,6 +103,7 @@ impl GGUFQWen {
             custom_stop_tokens: None,
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quant: None,
             quantization_config: None,
             moe_config: None,
             isq_quant: None,

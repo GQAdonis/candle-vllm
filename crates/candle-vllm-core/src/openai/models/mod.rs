@@ -238,6 +238,8 @@ pub struct Config {
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
     pub moe_config: Option<MoEConfig>,
+    #[serde(default)]
+    pub quant: Option<String>,
     pub quantization_config: Option<QuantConfig>,
     pub isq_quant: Option<String>,
     pub fp8_kvcache: Option<bool>,
@@ -436,6 +438,14 @@ impl Config {
                     };
                 config.extra_config_json = Some(raw);
                 config.apply_rope_overrides();
+                config.quant = if config.quantization_config.is_some() {
+                    config
+                        .quantization_config
+                        .as_ref()
+                        .map(|cfg| cfg.quant_method.clone())
+                } else {
+                    config.isq_quant.clone()
+                };
                 config.max_seq_len = config.effective_max_seq_len();
                 Ok(config)
             }
@@ -514,6 +524,7 @@ mod tests {
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             moe_config: None,
+            quant: None,
             quantization_config: None,
             isq_quant: None,
             fp8_kvcache: None,

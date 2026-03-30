@@ -120,8 +120,13 @@ impl ExtendedEngineBuilder {
         info!("Loading primary text model from: {}", model_path.display());
 
         // Create loader for the model
-        let loader =
-            DefaultLoader::new(None, Some(model_path.to_string_lossy().into_owned()), None);
+        let loader = DefaultLoader::new(
+            None,
+            Some(model_path.to_string_lossy().into_owned()),
+            None,
+            None,
+            None,
+        );
 
         // Prepare model weights
         let (paths, gguf) = loader
@@ -175,6 +180,7 @@ impl ExtendedEngineBuilder {
             fully_init: true,
             dtype: kv_cache_dtype,
             kvcache_mem_gpu: params.get_mem_mb(),
+            mamba_cache_budget_bytes: 0,
         };
 
         // Create scheduler configuration

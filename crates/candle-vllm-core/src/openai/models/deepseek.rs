@@ -182,6 +182,7 @@ impl DeepSeek {
             custom_stop_tokens: None,
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quant: quant.clone(),
             quantization_config: config.quantization_config.clone(),
             moe_config: Some(MoEConfig::DeepSeekMoE(moe_config)),
             isq_quant: quant,

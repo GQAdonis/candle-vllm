@@ -10,7 +10,6 @@ use crate::openai::communicator::DaemonManager;
 use crate::openai::conversation::default_conversation::{
     DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
 };
-use crate::openai::conversation::Conversation;
 use crate::openai::requests::{FunctionCallDelta, MessageContent, Messages, Tool, ToolCallDelta};
 use crate::openai::tool_parser::get_tool_parser;
 use crate::parking_lot::{
@@ -305,6 +304,7 @@ impl LLMEngine {
         let scheduler = Arc::new(parking_lot::Mutex::new(Scheduler::new(
             scheduler_config,
             cache_config,
+            false,
         )));
 
         let engine = Self {

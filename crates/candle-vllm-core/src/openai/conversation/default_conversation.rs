@@ -1,7 +1,8 @@
-use super::{ApplyChatTemplateError, Conversation, Message};
+use super::{ApplyChatTemplateError, Message};
 use crate::openai::requests::{Tool, ToolCall};
 use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value};
 use serde::Serialize;
+use tokenizers::Tokenizer;
 
 pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const DEFAULT_SEP: &str = "\n";
@@ -43,6 +44,8 @@ pub struct DefaultConversation {
     system_message: Option<String>,
     chat_template: Option<String>,
     messages: Vec<Message>,
+    escape_tokens: Vec<String>,
+    preserve_tokens: Vec<String>,
     sep_style: SeparatorStyle,
     bos_token: Option<String>,
     eos_token: Option<String>,
@@ -76,6 +79,8 @@ impl DefaultConversation {
             system_message: None,
             chat_template,
             messages,
+            escape_tokens: Vec::new(),
+            preserve_tokens: Vec::new(),
             sep_style,
             bos_token,
             eos_token,
@@ -131,7 +136,127 @@ fn raise_exception(msg: String) -> Result<String, minijinja::Error> {
     Err(minijinja::Error::new(ErrorKind::InvalidOperation, msg))
 }
 
+fn escape_special_tokens_in_text(
+    content: &str,
+    escape_tokens: &[String],
+    preserve_tokens: &[String],
+) -> String {
+    if escape_tokens.is_empty() || content.is_empty() {
+        return content.to_string();
+    }
+
+    let mut protected = content.to_string();
+    let mut sentinels = Vec::new();
+    for (idx, token) in preserve_tokens.iter().enumerate() {
+        if token.is_empty() || !protected.contains(token) {
+            continue;
+        }
+        let sentinel = format!("__CANDLE_VLLM_PRESERVE_TOKEN_{}__", idx);
+        protected = protected.replace(token, &sentinel);
+        sentinels.push((sentinel, token.clone()));
+    }
+
+    let mut escaped = protected;
+    for token in escape_tokens {
+        if token.is_empty() {
+            continue;
+        }
+        let escaped_token = if let Some(rest) = token.strip_prefix('<') {
+            format!("<\u{200C}{}", rest)
+        } else {
+            format!("{}\u{200C}", token)
+        };
+        escaped = escaped.replace(token, &escaped_token);
+    }
+
+    for (sentinel, token) in sentinels {
+        escaped = escaped.replace(&sentinel, &token);
+    }
+
+    escaped
+}
+
+fn should_escape_marker(token: &str) -> bool {
+    if token.is_empty() || token.len() < 3 {
+        return false;
+    }
+    let Some(first) = token.chars().next() else {
+        return false;
+    };
+    matches!(first, '<' | '[' | '{' | '(') || token.contains('|')
+}
+
+fn should_escape_nested_xml_tool_markers(tool_markers: &[&str]) -> bool {
+    tool_markers
+        .iter()
+        .any(|marker| marker.starts_with('<') && marker.contains("tool_call"))
+}
+
 impl DefaultConversation {
+    pub fn collect_escape_tokens(tokenizer: &Tokenizer, tool_markers: &[&str]) -> Vec<String> {
+        let mut tokens = tokenizer
+            .get_added_tokens_decoder()
+            .into_values()
+            .filter(|added| added.special)
+            .map(|added| added.content)
+            .collect::<Vec<_>>();
+
+        for marker in tool_markers {
+            if should_escape_marker(marker) {
+                tokens.push((*marker).to_string());
+            }
+        }
+
+        if should_escape_nested_xml_tool_markers(tool_markers) {
+            tokens.extend(
+                ["<function=", "</function>", "<parameter=", "</parameter>"]
+                    .into_iter()
+                    .map(|s| s.to_string()),
+            );
+        }
+
+        tokens.sort_by_key(|token| std::cmp::Reverse(token.len()));
+        tokens.dedup();
+        tokens
+    }
+
+    pub fn set_escape_tokens(&mut self, mut tokens: Vec<String>) {
+        tokens.retain(|token| !token.is_empty());
+        tokens.sort_by_key(|token| std::cmp::Reverse(token.len()));
+        tokens.dedup();
+        self.escape_tokens = tokens;
+    }
+
+    pub fn set_preserve_tokens(&mut self, mut tokens: Vec<String>) {
+        tokens.retain(|token| !token.is_empty());
+        tokens.sort_by_key(|token| std::cmp::Reverse(token.len()));
+        tokens.dedup();
+        self.preserve_tokens = tokens;
+    }
+
+    fn escaped_messages_for_render(&self) -> Vec<Message> {
+        if self.escape_tokens.is_empty() {
+            return self.messages.clone();
+        }
+
+        self.messages
+            .iter()
+            .map(|message| {
+                let mut escaped = message.clone();
+                if !matches!(escaped.role.as_str(), "system" | "developer") {
+                    escaped.content = escaped.content.as_ref().map(|content| {
+                        escape_special_tokens_in_text(
+                            content,
+                            &self.escape_tokens,
+                            &self.preserve_tokens,
+                        )
+                    });
+                }
+                escaped
+            })
+            .collect()
+    }
+
     /// Set the system message.
     pub fn set_system_message(&mut self, system_message: Option<String>) {
         self.system_message = system_message.clone();
@@ -225,9 +350,10 @@ impl DefaultConversation {
         let template = env
             .get_template(&self.name)
             .map_err(ApplyChatTemplateError::GetTemplateError)?;
+        let messages = self.escaped_messages_for_render();
         template
             .render(context! {
-              messages => self.messages,
+              messages => messages,
               tools => self.tools,
               add_generation_prompt => add_generation_prompt,
               bos_token => self.bos_token,

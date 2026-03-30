@@ -1,6 +1,6 @@
 use crate::openai::conversation::Message;
 use crate::openai::models::Config;
-use crate::openai::requests::{ChatMessage, ImageUrlContent, MessageContent, MessageContentType};
+use crate::openai::requests::{ChatMessage, ContentPart, MessageContent};
 use candle_core::{DType, Device, Result, Storage, Tensor};
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView};
@@ -765,17 +765,13 @@ pub fn get_image_config(config: &Config) -> Result<Option<ImageProcessConfig>> {
     }
 }
 
-fn extract_text_content(content: &MessageContentType) -> String {
+fn extract_text_content(content: &MessageContent) -> String {
     match content {
-        MessageContentType::PureText(text) => text.clone(),
-        MessageContentType::Single(item) => match item {
-            MessageContent::Text { text } => text.clone(),
-            _ => String::new(),
-        },
-        MessageContentType::Multi(items) => items
+        MessageContent::Text(text) => text.clone(),
+        MessageContent::Parts(items) => items
             .iter()
             .filter_map(|item| match item {
-                MessageContent::Text { text } => Some(text.as_str()),
+                ContentPart::Text { text } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -783,53 +779,20 @@ fn extract_text_content(content: &MessageContentType) -> String {
     }
 }
 
-fn parse_template_tool_arguments(arguments: Option<&str>) -> serde_json::Value {
-    let Some(raw) = arguments.map(str::trim).filter(|s| !s.is_empty()) else {
-        return serde_json::json!({});
-    };
-
-    match serde_json::from_str::<serde_json::Value>(raw).ok() {
-        Some(serde_json::Value::Object(obj)) => serde_json::Value::Object(obj),
-        Some(serde_json::Value::String(inner)) => {
-            match serde_json::from_str::<serde_json::Value>(inner.trim()).ok() {
-                Some(serde_json::Value::Object(obj)) => serde_json::Value::Object(obj),
-                _ => serde_json::json!({}),
-            }
-        }
-        _ => serde_json::json!({}),
-    }
-}
-
-fn to_template_tool_call(call: &crate::tools::ToolCall) -> serde_json::Value {
-    serde_json::json!({
-        "id": call.id.clone(),
-        "type": call.call_type.clone(),
-        "function": {
-            "name": call.function.name.clone(),
-            "arguments": parse_template_tool_arguments(Some(call.function.arguments.as_str()))
-        }
-    })
-}
-
 fn append_message_item(
-    item: &MessageContent,
+    item: &ContentPart,
     prompt: &mut String,
     images: &mut Vec<DynamicImage>,
 ) -> Result<()> {
     match item {
-        MessageContent::Text { text } => prompt.push_str(text),
-        MessageContent::ImageUrl { image_url } => {
-            let url = image_url.url();
+        ContentPart::Text { text } => prompt.push_str(text),
+        ContentPart::ImageUrl { image_url } => {
+            let url = image_url.url.as_str();
             let img = if url.starts_with("data:") {
                 load_image_from_base64(url)?
             } else {
                 load_image_from_url(url)?
             };
-            prompt.push_str(IMAGE_PLACEHOLDER);
-            images.push(img);
-        }
-        MessageContent::ImageBase64 { image_base64 } => {
-            let img = load_image_from_base64(image_base64)?;
             prompt.push_str(IMAGE_PLACEHOLDER);
             images.push(img);
         }
@@ -854,19 +817,12 @@ pub fn convert_chat_message(
             .unwrap_or_default()
             .trim()
             .to_owned();
-        let template_calls = msg
-            .tool_calls
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(to_template_tool_call)
-            .collect::<Vec<_>>();
         return Ok(Message {
             role,
-            content,
-            num_images: 0,
-            tool_calls: Some(template_calls),
+            content: Some(content),
+            tool_calls: msg.tool_calls.clone(),
             tool_call_id: None,
+            name: None,
         });
     }
 
@@ -880,21 +836,17 @@ pub fn convert_chat_message(
             .to_owned();
         return Ok(Message {
             role,
-            content,
-            num_images: 0,
+            content: Some(content),
             tool_calls: None,
             tool_call_id: msg.tool_call_id.clone(),
+            name: msg.name.clone(),
         });
     }
 
     if let Some(content) = &msg.content {
         match content {
-            MessageContentType::PureText(text) => prompt.push_str(text),
-            MessageContentType::Single(item) => {
-                append_message_item(item, &mut prompt, &mut images)?;
-                prompt.push(' ');
-            }
-            MessageContentType::Multi(items) => {
+            MessageContent::Text(text) => prompt.push_str(text),
+            MessageContent::Parts(items) => {
                 for item in items {
                     append_message_item(item, &mut prompt, &mut images)?;
                     prompt.push(' ');
@@ -910,7 +862,7 @@ pub fn convert_chat_message(
         }
     }
 
-    Ok(Message::new(role, prompt.trim().to_owned(), images.len()))
+    Ok(Message::text(role, prompt.trim().to_owned()))
 }
 
 pub fn build_messages_and_images(
@@ -956,13 +908,4 @@ pub fn build_messages_and_images(
     };
 
     Ok((messages, image_data))
-}
-
-impl ImageUrlContent {
-    pub fn url(&self) -> &str {
-        match self {
-            Self::Url(url) => url,
-            Self::Object { url, .. } => url,
-        }
-    }
 }

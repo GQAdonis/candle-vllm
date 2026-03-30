@@ -1067,110 +1067,109 @@ fn load_ln_fp8_with_hints(
 
 impl Module for LnFp8 {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let (b_sz, seq_len, in_dim) = match x.dims() {
-            [b, s, d] => (*b, *s, *d),
-            [b, d] => (*b, 1, *d),
-            _ => candle_core::bail!("LnFp8: Input should be 2D or 3D"),
-        };
-
-        let m = b_sz * seq_len;
-        let k = in_dim;
-
-        let x_2d = x.reshape((m, k))?;
-
-        #[cfg(feature = "flashinfer")]
-        let can_use_flashinfer_fp8 = (90..100).contains(&self.sm_version)
-            && x_2d.dtype() == DType::BF16
-            && self.weight_block_size.as_slice() == &[128, 128]
-            && !fp8_linear_is_prefill()
-            && m <= 64;
-
-        #[cfg(feature = "flashinfer")]
-        let out = if can_use_flashinfer_fp8 {
-            attention_rs::fp8_linear::fp8_matmul_flashinfer(
-                &x_2d,
-                &self.weight,
-                &self.weight_scale,
-            )?
-        } else {
-            #[cfg(feature = "cutlass")]
-            {
-                let weight_scale_cutlass = self
-                    .weight_scale_cutlass
-                    .as_ref()
-                    .unwrap_or(&self.weight_scale);
-                if self.sm_version >= 90 {
-                    attention_rs::fp8_linear::fp8_matmul_cutlass(
-                        &x_2d,
-                        &self.weight.t()?,
-                        weight_scale_cutlass,
-                        &self.weight_block_size,
-                    )?
-                } else {
-                    attention_rs::fp8_linear::fp8_matmul(
-                        &x_2d,
-                        &self.weight,
-                        &self.weight_scale,
-                        &self.weight_block_size,
-                    )?
-                }
-            }
-
-            #[cfg(not(feature = "cutlass"))]
-            {
-                candle_core::bail!(
-                    "FP8 model inference requires the `cutlass` feature flag. \
-                     Rebuild with `--features cutlass`."
-                );
-            }
-        };
-
-        #[cfg(not(feature = "flashinfer"))]
-        #[cfg(feature = "cutlass")]
-        let out = if self.sm_version >= 90 {
-            let weight_scale_cutlass = self
-                .weight_scale_cutlass
-                .as_ref()
-                .unwrap_or(&self.weight_scale);
-            attention_rs::fp8_linear::fp8_matmul_cutlass(
-                &x_2d,
-                &self.weight.t()?,
-                weight_scale_cutlass,
-                &self.weight_block_size,
-            )?
-        } else {
-            // slower path
-            attention_rs::fp8_linear::fp8_matmul(
-                &x_2d,
-                &self.weight,
-                &self.weight_scale,
-                &self.weight_block_size,
-            )?
-        };
-
         #[cfg(all(not(feature = "flashinfer"), not(feature = "cutlass")))]
-        let out = {
+        {
+            let _ = x;
             candle_core::bail!(
                 "FP8 model inference requires the `cutlass` feature flag. \
                  Rebuild with `--features cutlass`."
             );
-            #[expect(
-                unreachable_code,
-                reason = "bail! diverges but type inference needs help"
-            )]
-            x_2d
-        };
+        }
 
-        let (_, out_dim) = out.dims2()?;
-        let out = if seq_len > 1 {
-            out.reshape((b_sz, seq_len, out_dim))?
-        } else {
-            out
-        };
+        #[cfg(any(feature = "flashinfer", feature = "cutlass"))]
+        {
+            let (b_sz, seq_len, in_dim) = match x.dims() {
+                [b, s, d] => (*b, *s, *d),
+                [b, d] => (*b, 1, *d),
+                _ => candle_core::bail!("LnFp8: Input should be 2D or 3D"),
+            };
 
-        match &self.bias {
-            None => Ok(out),
-            Some(bias) => out.broadcast_add(bias),
+            let m = b_sz * seq_len;
+            let k = in_dim;
+
+            let x_2d = x.reshape((m, k))?;
+
+            #[cfg(feature = "flashinfer")]
+            let can_use_flashinfer_fp8 = (90..100).contains(&self.sm_version)
+                && x_2d.dtype() == DType::BF16
+                && self.weight_block_size.as_slice() == &[128, 128]
+                && !fp8_linear_is_prefill()
+                && m <= 64;
+
+            #[cfg(feature = "flashinfer")]
+            let out = if can_use_flashinfer_fp8 {
+                attention_rs::fp8_linear::fp8_matmul_flashinfer(
+                    &x_2d,
+                    &self.weight,
+                    &self.weight_scale,
+                )?
+            } else {
+                #[cfg(feature = "cutlass")]
+                {
+                    let weight_scale_cutlass = self
+                        .weight_scale_cutlass
+                        .as_ref()
+                        .unwrap_or(&self.weight_scale);
+                    if self.sm_version >= 90 {
+                        attention_rs::fp8_linear::fp8_matmul_cutlass(
+                            &x_2d,
+                            &self.weight.t()?,
+                            weight_scale_cutlass,
+                            &self.weight_block_size,
+                        )?
+                    } else {
+                        attention_rs::fp8_linear::fp8_matmul(
+                            &x_2d,
+                            &self.weight,
+                            &self.weight_scale,
+                            &self.weight_block_size,
+                        )?
+                    }
+                }
+
+                #[cfg(not(feature = "cutlass"))]
+                {
+                    candle_core::bail!(
+                        "FP8 model inference requires the `cutlass` feature flag. \
+                     Rebuild with `--features cutlass`."
+                    );
+                }
+            };
+
+            #[cfg(not(feature = "flashinfer"))]
+            #[cfg(feature = "cutlass")]
+            let out = if self.sm_version >= 90 {
+                let weight_scale_cutlass = self
+                    .weight_scale_cutlass
+                    .as_ref()
+                    .unwrap_or(&self.weight_scale);
+                attention_rs::fp8_linear::fp8_matmul_cutlass(
+                    &x_2d,
+                    &self.weight.t()?,
+                    weight_scale_cutlass,
+                    &self.weight_block_size,
+                )?
+            } else {
+                // slower path
+                attention_rs::fp8_linear::fp8_matmul(
+                    &x_2d,
+                    &self.weight,
+                    &self.weight_scale,
+                    &self.weight_block_size,
+                )?
+            };
+
+            let (_, out_dim) = out.dims2()?;
+            let out = if seq_len > 1 {
+                out.reshape((b_sz, seq_len, out_dim))?
+            } else {
+                out
+            };
+
+            match &self.bias {
+                None => Ok(out),
+                Some(bias) => out.broadcast_add(bias),
+            }
         }
     }
 }

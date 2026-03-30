@@ -594,6 +594,7 @@ fn get_cache_config(
         fully_init: true,
         dtype: kv_dtype,
         kvcache_mem_gpu,
+        mamba_cache_budget_bytes: 0,
     }
 }
 
@@ -749,6 +750,8 @@ pub async fn run() -> Result<()> {
         args.model_id.clone(),
         args.weight_path.clone(),
         args.weight_file.clone(),
+        None,
+        None,
     );
     let (paths, gguf) = loader
         .prepare_model_weights(args.hf_token.clone(), args.hf_token_path.clone())
