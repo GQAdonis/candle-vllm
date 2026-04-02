@@ -9,6 +9,8 @@ pub mod block_engine;
 /// actually allocates the KV cache for the CPU and GPU. It is used by the LLMEngine to execute
 /// operations issued by the scheduler.
 pub mod cache_engine;
+/// TurboQuant KV-cache compression types and algorithms.
+pub mod kv_compression;
 pub mod mamba;
 pub mod prefix_cache;
 pub mod sequence;

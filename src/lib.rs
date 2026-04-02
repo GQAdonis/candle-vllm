@@ -84,24 +84,26 @@ pub fn get_cache_config(
     config: &crate::openai::models::Config,
     kv_dtype: candle::DType,
     num_shards: usize,
+    compression: Option<&candle_vllm_core::scheduler::kv_compression::KvCacheCompressionConfig>,
 ) -> crate::scheduler::cache_engine::CacheConfig {
     let kv_layers = config.kv_cache_num_layers().max(1);
-    let dsize = kv_dtype.size_in_bytes();
+    let num_kv_heads =
+        config.num_key_value_heads.unwrap_or(config.num_attention_heads) / num_shards;
+    let head_dim = config
+        .head_dim
+        .unwrap_or(config.hidden_size / config.num_attention_heads);
     let size_in_mb = 1024 * 1024;
-    let num_gpu_blocks = kvcache_mem_gpu * size_in_mb
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / kv_layers
-        / 2;
-    let num_cpu_blocks = kvcache_mem_cpu * size_in_mb
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / kv_layers
-        / 2;
+    let bytes_per_blk = candle_vllm_core::scheduler::kv_compression::bytes_per_block(
+        num_kv_heads,
+        head_dim,
+        block_size,
+        kv_dtype,
+        compression,
+    );
+    let num_gpu_blocks =
+        (kvcache_mem_gpu * size_in_mb) / (kv_layers.max(1) * bytes_per_blk.max(1));
+    let num_cpu_blocks =
+        (kvcache_mem_cpu * size_in_mb) / (kv_layers.max(1) * bytes_per_blk.max(1));
     crate::scheduler::cache_engine::CacheConfig {
         block_size,
         num_gpu_blocks: Some(num_gpu_blocks),
@@ -110,6 +112,7 @@ pub fn get_cache_config(
         dtype: kv_dtype,
         kvcache_mem_gpu,
         mamba_cache_budget_bytes: 0,
+        compression: compression.cloned(),
     }
 }
 

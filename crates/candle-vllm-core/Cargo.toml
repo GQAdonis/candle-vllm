@@ -54,6 +54,7 @@ ahash = { workspace = true }
 utoipa = { workspace = true }
 crossbeam = { workspace = true }
 prometheus_parking_lot = { workspace = true }
+turboquant = { workspace = true }
 num_cpus = "1.16"
 async-stream = { workspace = true }
 sha2 = "0.10"

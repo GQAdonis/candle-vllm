@@ -164,10 +164,22 @@ impl LlmExecutor {
         };
 
         // Initial forward pass
+        let kv_tensors = match self.cache_engine.get_kv_tensors() {
+            Ok(t) => t,
+            Err(e) => {
+                error!(
+                    rank = self.rank,
+                    request_id = %job.request_id,
+                    error = %e,
+                    "Failed to prepare KV tensors"
+                );
+                return InferenceResult::error(e.to_string());
+            }
+        };
         let forward_result = self.pipeline.forward(
             tokens_tensor,
             &positions_tensor,
-            Some(&self.cache_engine.get_kv_cache()),
+            Some(&kv_tensors),
             &input_metadata,
             None,
         );
@@ -486,10 +498,17 @@ impl LlmExecutor {
             "🔮 EXECUTOR: Starting initial forward pass (prefill) - request_id={}",
             job.request_id
         );
+        let kv_tensors_prefill = match cache_engine.get_kv_tensors() {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = token_tx.send(Err(e.to_string()));
+                return;
+            }
+        };
         let forward_result = pipeline.forward(
             tokens_tensor,
             &positions_tensor,
-            Some(&cache_engine.get_kv_cache()),
+            Some(&kv_tensors_prefill),
             &input_metadata,
             None,
         );
@@ -678,10 +697,17 @@ impl LlmExecutor {
                     };
 
                     // Forward pass for next step
+                    let kv_tensors_step = match cache_engine.get_kv_tensors() {
+                        Ok(t) => t,
+                        Err(e) => {
+                            let _ = token_tx.send(Err(e.to_string()));
+                            return;
+                        }
+                    };
                     current_logits = match pipeline.forward(
                         all_tokens_tensor,
                         &positions_tensor,
-                        Some(&cache_engine.get_kv_cache()),
+                        Some(&kv_tensors_step),
                         &step_metadata,
                         None,
                     ) {

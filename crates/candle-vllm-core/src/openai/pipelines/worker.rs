@@ -207,10 +207,23 @@ impl InferenceWorker {
         // Step 1: GPU inference forward pass
         // Note: We use the cache_engine's kv_cache but the full autoregressive
         // generation loop needs to be integrated with the scheduler
+        let kv_tensors = match self.cache_engine.get_kv_tensors() {
+            Ok(t) => t,
+            Err(e) => {
+                error!(
+                    rank = self.rank,
+                    request_id = %work.request_id,
+                    error = %e,
+                    "Failed to prepare KV tensors"
+                );
+                let _ = work.response_tx.send(Err(e.to_string()));
+                return;
+            }
+        };
         let forward_result = self.pipeline.forward(
             tokens_tensor,
             &positions_tensor,
-            Some(&self.cache_engine.get_kv_cache()),
+            Some(&kv_tensors),
             &work.input_metadata,
             None,
         );

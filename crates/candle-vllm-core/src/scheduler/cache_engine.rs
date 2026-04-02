@@ -1,4 +1,7 @@
 use crate::openai::models::Config;
+use crate::scheduler::kv_compression::{
+    CompressedStore, KvCacheCompressionConfig, KvCacheTensors,
+};
 use candle_core::{DType, Device, Result, Tensor};
 use std::{
     collections::HashMap,
@@ -17,6 +20,8 @@ pub struct CacheConfig {
     pub dtype: DType,
     pub kvcache_mem_gpu: usize, // in MB
     pub mamba_cache_budget_bytes: usize,
+    /// Optional TurboQuant compression configuration.
+    pub compression: Option<KvCacheCompressionConfig>,
 }
 
 impl CacheConfig {
@@ -45,6 +50,16 @@ pub struct CacheEngine {
     /// Number of model layers (reserved for layer-wise cache management)
     #[allow(dead_code)]
     num_layers: usize,
+    /// Optional TurboQuant compressed store (None when compression is disabled).
+    compressed_store: Option<Arc<Mutex<CompressedStore>>>,
+    /// Inference device (needed for on-demand decompression).
+    device: Device,
+    /// KV-cache dtype (needed for on-demand decompression).
+    dtype: DType,
+    /// Number of GPU blocks (needed for full-tensor decompression).
+    num_gpu_blocks: usize,
+    /// Whether flash-attention layout is in use.
+    flash_layout: bool,
 }
 
 impl CacheEngine {
@@ -55,6 +70,42 @@ impl CacheEngine {
         device: &Device,
         num_shards: usize,
     ) -> Result<Self> {
+        let num_gpu_blocks = if cfg!(feature = "cuda") {
+            cache_config.num_gpu_blocks.unwrap_or(32)
+        } else if device.is_cpu() {
+            1
+        } else {
+            cache_config.num_gpu_blocks.unwrap_or(32)
+        };
+
+        let flash_layout = cfg!(any(feature = "flashattn", feature = "flashinfer"));
+
+        let compressed_store = if let Some(ref cfg) = cache_config.compression {
+            let num_kv_heads =
+                model_config.num_key_value_heads.unwrap_or(model_config.num_attention_heads)
+                    / num_shards;
+            let head_dim = model_config
+                .head_dim
+                .unwrap_or(model_config.hidden_size / model_config.num_attention_heads);
+            let store = CompressedStore::new(
+                model_config.kv_cache_num_layers(),
+                num_kv_heads,
+                head_dim,
+                cache_config.block_size,
+                cfg.bits,
+            )?;
+            tracing::info!(
+                bits = cfg.bits,
+                num_layers = model_config.kv_cache_num_layers(),
+                num_kv_heads,
+                head_dim,
+                "TurboQuant KV-cache compression enabled"
+            );
+            Some(Arc::new(Mutex::new(store)))
+        } else {
+            None
+        };
+
         Ok(Self {
             gpu_cache: Arc::new(Mutex::new(Self::allocate_kv_cache(
                 model_config,
@@ -71,15 +122,94 @@ impl CacheEngine {
                 num_shards,
             )?,
             num_layers: model_config.kv_cache_num_layers(),
+            compressed_store,
+            device: device.clone(),
+            dtype,
+            num_gpu_blocks,
+            flash_layout,
         })
     }
 
+    /// Returns the raw mutex guard over the uncompressed GPU cache.
+    ///
+    /// Prefer `get_kv_tensors()` which transparently handles both compressed
+    /// and uncompressed paths.
     pub fn get_kv_cache(&self) -> MutexGuard<'_, Vec<KVCache>> {
         loop {
             if let Ok(v) = self.gpu_cache.try_lock() {
                 return v;
             }
         }
+    }
+
+    /// Returns a KV-cache handle suitable for a model forward pass.
+    ///
+    /// - Uncompressed path: returns a shallow clone of the pre-allocated tensors
+    ///   (cheap — no data copy; candle tensors are reference-counted).
+    /// - Compressed path: decompresses all allocated blocks into fresh tensors.
+    ///   These tensors are dropped after the forward pass, keeping the at-rest
+    ///   memory footprint small.
+    pub fn get_kv_tensors(&self) -> Result<KvCacheTensors> {
+        if let Some(ref store_mu) = self.compressed_store {
+            let store = loop {
+                if let Ok(g) = store_mu.try_lock() {
+                    break g;
+                }
+            };
+            let mut tensors = Vec::with_capacity(store.layers.len());
+            for layer in &store.layers {
+                let (k, v) = if self.flash_layout {
+                    layer.decompress_all_flash(
+                        self.num_gpu_blocks,
+                        self.dtype,
+                        &self.device,
+                    )?
+                } else {
+                    layer.decompress_all_standard(
+                        self.num_gpu_blocks,
+                        self.dtype,
+                        &self.device,
+                    )?
+                };
+                tensors.push((k, v));
+            }
+            Ok(KvCacheTensors::Decompressed(tensors))
+        } else {
+            let guard = self.get_kv_cache();
+            let cloned: Vec<(Tensor, Tensor)> = guard
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(KvCacheTensors::Uncompressed(cloned))
+        }
+    }
+
+    /// Compress and store one token slot for the given layer.
+    ///
+    /// `keys` and `vals` are flat `f32` slices of length `num_kv_heads * head_dim`.
+    /// No-op when compression is disabled.
+    pub fn push_compressed(
+        &self,
+        layer: usize,
+        block_id: usize,
+        slot_in_block: usize,
+        keys: &[f32],
+        vals: &[f32],
+    ) -> Result<()> {
+        if let Some(ref store_mu) = self.compressed_store {
+            let mut store = loop {
+                if let Ok(g) = store_mu.try_lock() {
+                    break g;
+                }
+            };
+            store.push_slot(layer, block_id, slot_in_block, keys, vals)?;
+        }
+        Ok(())
+    }
+
+    /// Returns `true` if TurboQuant compression is currently enabled.
+    pub fn compression_enabled(&self) -> bool {
+        self.compressed_store.is_some()
     }
 
     fn allocate_kv_cache(

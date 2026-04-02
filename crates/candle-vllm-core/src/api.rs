@@ -302,6 +302,7 @@ impl InferenceEngine {
             dtype: kv_cache_dtype,
             kvcache_mem_gpu: config.kv_cache_memory.unwrap_or(4096),
             mamba_cache_budget_bytes: 0,
+            compression: None,
         };
 
         let scheduler_config = SchedulerConfig {

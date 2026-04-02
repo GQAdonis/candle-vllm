@@ -32,6 +32,7 @@ use candle_vllm_core::openai::sampling_params::GenerationConfig;
 use candle_vllm_core::openai::OpenAIServerData;
 use candle_vllm_core::prompt_cache::{CacheBackend, PromptCacheConfig, PromptCacheManager};
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
+use candle_vllm_core::scheduler::kv_compression::KvCacheCompressionConfig;
 use candle_vllm_core::scheduler::SchedulerConfig;
 use candle_vllm_openai::model_registry::ModelAlias;
 // use candle_vllm_responses::session::ResponsesSession;
@@ -571,22 +572,26 @@ fn get_cache_config(
     config: &Config,
     kv_dtype: DType,
     num_shards: usize,
+    compression: Option<&KvCacheCompressionConfig>,
 ) -> CacheConfig {
-    let dsize = kv_dtype.size_in_bytes();
-    let num_gpu_blocks = kvcache_mem_gpu * SIZE_IN_MB
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / config.num_hidden_layers
-        / 2;
-    let num_cpu_blocks = kvcache_mem_cpu * SIZE_IN_MB
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / config.num_hidden_layers
-        / 2;
+    let kv_layers = config.num_hidden_layers.max(1);
+    let num_kv_heads =
+        config.num_key_value_heads.unwrap_or(config.num_attention_heads) / num_shards;
+    let head_dim = config
+        .head_dim
+        .unwrap_or(config.hidden_size / config.num_attention_heads);
+    let bytes_per_blk =
+        candle_vllm_core::scheduler::kv_compression::bytes_per_block(
+            num_kv_heads,
+            head_dim,
+            block_size,
+            kv_dtype,
+            compression,
+        );
+    let num_gpu_blocks =
+        (kvcache_mem_gpu * SIZE_IN_MB) / (kv_layers * bytes_per_blk.max(1));
+    let num_cpu_blocks =
+        (kvcache_mem_cpu * SIZE_IN_MB) / (kv_layers * bytes_per_blk.max(1));
     CacheConfig {
         block_size,
         num_gpu_blocks: Some(num_gpu_blocks),
@@ -595,6 +600,7 @@ fn get_cache_config(
         dtype: kv_dtype,
         kvcache_mem_gpu,
         mamba_cache_budget_bytes: 0,
+        compression: compression.cloned(),
     }
 }
 
@@ -955,6 +961,7 @@ pub async fn run() -> Result<()> {
             &cfg,
             kv_cache_dtype,
             num_shards,
+            None,
         );
         let cache_engine = CacheEngine::new(
             &cfg,

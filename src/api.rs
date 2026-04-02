@@ -276,6 +276,7 @@ impl EngineBuilder {
                     &cfg,
                     kv_cache_dtype,
                     num_shards,
+                    None,
                 );
                 cache_cfg.mamba_cache_budget_bytes = mamba_cache_budget_bytes;
 

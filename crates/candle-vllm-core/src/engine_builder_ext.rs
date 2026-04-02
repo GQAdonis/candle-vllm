@@ -181,6 +181,7 @@ impl ExtendedEngineBuilder {
             dtype: kv_cache_dtype,
             kvcache_mem_gpu: params.get_mem_mb(),
             mamba_cache_budget_bytes: 0,
+            compression: params.kvcache_compression.clone(),
         };
 
         // Create scheduler configuration
