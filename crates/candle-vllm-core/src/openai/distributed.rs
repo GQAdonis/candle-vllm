@@ -111,7 +111,7 @@ impl MergedParallelColumnLinear {
         };
 
         #[cfg(feature = "cuda")]
-        let sm_version = attention_rs::cuda_utils::sm_version(vb.device().as_cuda_device()?)
+        let sm_version = crate::attention::cuda_utils::sm_version(vb.device().as_cuda_device()?)
             .unwrap_or(0) as usize;
 
         #[cfg(not(feature = "cuda"))]
@@ -661,7 +661,7 @@ impl MergedParallelColumnLinear {
             };
 
             #[cfg(feature = "cuda")]
-            let sm_version = attention_rs::cuda_utils::sm_version(vb.device().as_cuda_device()?)
+            let sm_version = crate::attention::cuda_utils::sm_version(vb.device().as_cuda_device()?)
                 .unwrap_or(0) as usize;
 
             #[cfg(not(feature = "cuda"))]

@@ -5,6 +5,7 @@ use candle_core as candle;
 use std::path::Path;
 use tracing::warn;
 pub mod api;
+pub mod attention;
 pub mod backend;
 pub mod config;
 pub mod engine_builder_ext;
@@ -18,7 +19,7 @@ pub mod prompt_cache;
 pub mod scheduler;
 pub mod tools;
 pub mod vision;
-pub use attention_rs::{InputMetadata, PagedAttention};
+pub use attention::{InputMetadata, PagedAttention};
 
 pub const MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV: &str = "VLLM_RS_MAMBA_SNAPSHOT_STRIDE_BLOCKS";
 pub const DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE: usize = 8;

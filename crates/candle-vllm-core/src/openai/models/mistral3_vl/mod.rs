@@ -15,8 +15,8 @@ use crate::openai::models::layers::{
 use crate::openai::models::{mistral::Mistral, Config};
 use crate::openai::multimodal::ImageData;
 use crate::InputMetadata;
-use attention_rs::ops::NonZeroOp;
-use attention_rs::ops::SplitOp;
+use crate::attention::ops::NonZeroOp;
+use crate::attention::ops::SplitOp;
 use candle_core::{DType, Device, Result, Tensor, D};
 use parking_lot::RwLock;
 

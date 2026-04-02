@@ -1,5 +1,5 @@
 #[cfg(feature = "cuda")]
-use attention_rs::kernels::ffi::{
+use crate::attention::kernels::ffi::{
     awq_repack, gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4bit_f16,
     marlin_awq_4bit_bf16, marlin_awq_4bit_f16,
 };

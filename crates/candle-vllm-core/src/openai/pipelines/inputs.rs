@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::Arc};
 use candle_core::{Device, Result, Tensor};
 
 #[cfg(feature = "flashinfer")]
-use attention_rs::FlashInferMetadata;
+use crate::attention::FlashInferMetadata;
 
 use super::{LLMEngine, PreparedInputs, Sequence, SequenceGroup, PREFILL_CHUNK_SIZE, _PAD_SLOT_ID};
 use crate::InputMetadata;

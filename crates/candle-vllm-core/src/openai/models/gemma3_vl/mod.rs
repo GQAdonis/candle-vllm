@@ -11,7 +11,7 @@ use crate::openai::models::layers::others::{conv2d, layer_norm, rms_norm, AvgPoo
 use crate::openai::models::Config;
 use crate::openai::multimodal::ImageData;
 use crate::InputMetadata;
-use attention_rs::ops::NonZeroOp;
+use crate::attention::ops::NonZeroOp;
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{Activation, Conv2d, Conv2dConfig, Embedding};
 use parking_lot::RwLock;

@@ -36,12 +36,23 @@ impl VisionRotaryEmbedding {
     }
 
     fn apply(&self, q: &Tensor, k: &Tensor, positions: &Tensor) -> Result<(Tensor, Tensor)> {
-        use attention_rs::fused_rope::FusedRope;
+        #[cfg(any(feature = "cuda", feature = "metal"))]
+        {
+            use crate::attention::fused_rope::FusedRope;
 
-        let q = q.contiguous()?;
-        let k = k.contiguous()?;
-        FusedRope::apply_inplace(&q, &k, &self.cos, &self.sin, positions, false)?;
-        Ok((q, k))
+            let q = q.contiguous()?;
+            let k = k.contiguous()?;
+            FusedRope::apply_inplace(&q, &k, &self.cos, &self.sin, positions, false)?;
+            return Ok((q, k));
+        }
+        #[cfg(not(any(feature = "cuda", feature = "metal")))]
+        {
+            let cos = self.cos.index_select(positions, 0)?;
+            let sin = self.sin.index_select(positions, 0)?;
+            let q = candle_nn::rotary_emb::rope(q, &cos, &sin)?;
+            let k = candle_nn::rotary_emb::rope(k, &cos, &sin)?;
+            Ok((q, k))
+        }
     }
 }
 

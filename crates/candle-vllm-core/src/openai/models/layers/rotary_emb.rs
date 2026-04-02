@@ -1,5 +1,5 @@
 use crate::openai::models::{Config, ScalingValue};
-use attention_rs::fused_rope::FusedRope;
+use crate::attention::fused_rope::FusedRope;
 use candle::{DType, Device, Result, Tensor, D};
 use candle_core as candle;
 pub use std::rc::Rc;
@@ -55,6 +55,7 @@ impl DefaultRotaryEmbedding {
         k: &Tensor,
         positions: &Tensor,
     ) -> Result<(Tensor, Tensor)> {
+        #[cfg(any(feature = "cuda", feature = "metal"))]
         if !q.device().is_cpu() && q.dims().len() == 3 && k.dims().len() == 3 {
             let q = q.contiguous()?;
             let k = k.contiguous()?;

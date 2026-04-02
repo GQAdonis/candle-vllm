@@ -15,7 +15,7 @@ pub use candle_vllm_responses as responses;
 pub use candle_vllm_server as server;
 
 // Re-export core sub-modules so `crate::backend`, `crate::openai`, `crate::scheduler` still work
-pub use attention_rs::{InputMetadata, PagedAttention};
+pub use candle_vllm_core::attention::{InputMetadata, PagedAttention};
 pub use candle_vllm_core::{backend, openai, scheduler};
 
 // Re-export core API types

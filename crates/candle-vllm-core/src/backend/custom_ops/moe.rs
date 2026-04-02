@@ -1,5 +1,5 @@
 #[cfg(feature = "cuda")]
-use attention_rs::sort::ArgSortOp; //use custom argsort which fixed the bugs on A100
+use crate::attention::sort::ArgSortOp; //use custom argsort which fixed the bugs on A100
 use candle::shape::Dim;
 use candle::{CpuStorage, CustomOp1, Error, Layout, Shape, WithDType};
 use candle::{Result, Tensor, D};
@@ -40,11 +40,14 @@ impl CustomOp1 for NonZero {
         let result = match storage {
             CpuStorage::U8(vs) => self.nonzero(vs, layout),
             CpuStorage::U32(vs) => self.nonzero(vs, layout),
+            CpuStorage::I16(vs) => self.nonzero(vs, layout),
+            CpuStorage::I32(vs) => self.nonzero(vs, layout),
             CpuStorage::I64(vs) => self.nonzero(vs, layout),
             CpuStorage::BF16(vs) => self.nonzero(vs, layout),
             CpuStorage::F16(vs) => self.nonzero(vs, layout),
             CpuStorage::F32(vs) => self.nonzero(vs, layout),
             CpuStorage::F64(vs) => self.nonzero(vs, layout),
+            _ => candle_core::bail!("nonzero: unsupported dtype"),
         };
         let index_len = layout.dims().len();
         let result_len = result.len() / index_len;

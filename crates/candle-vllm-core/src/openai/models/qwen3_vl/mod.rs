@@ -13,7 +13,7 @@ use crate::openai::models::{
 };
 use crate::openai::multimodal::ImageData;
 use crate::InputMetadata;
-use attention_rs::mamba_cache::MambaCache;
+use crate::attention::mamba_cache::MambaCache;
 use candle_core::{DType, Device, Result, Tensor, D};
 use config::Qwen3VLConfig;
 use vision::Qwen3VLVisionModel;
@@ -199,7 +199,7 @@ impl Qwen3VLForConditionalGeneration {
                 .broadcast_as(input_embeds.shape().clone())?
                 .to_dtype(DType::U32)?;
 
-            use attention_rs::ops::NonZeroOp;
+            use crate::attention::ops::NonZeroOp;
             let indices = image_mask.flatten_all()?.nonzero()?.squeeze(1)?;
             if indices.dim(0)? > 0 {
                 let hidden = input_embeds.dim(D::Minus1)?;

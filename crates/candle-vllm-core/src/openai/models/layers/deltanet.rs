@@ -7,9 +7,10 @@ use crate::openai::distributed::{
     VarBuilder,
 };
 use crate::openai::models::{resolve_qwen3_hybrid_config, Config};
-use attention_rs::gdn;
-use attention_rs::mamba_cache::MambaCache;
-use attention_rs::InputMetadata;
+#[cfg(any(feature = "cuda", feature = "metal"))]
+use crate::attention::gdn;
+use crate::attention::mamba_cache::MambaCache;
+use crate::attention::InputMetadata;
 use candle_core::{DType, Result, Tensor};
 use std::rc::Rc;
 
@@ -436,6 +437,7 @@ impl GatedDeltaNet {
         })
     }
 
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     pub fn forward(
         &self,
         xs: &Tensor,
@@ -502,9 +504,9 @@ impl GatedDeltaNet {
             gdn::fused_gdn_gating(&self.a_log, &a_expanded, &b_expanded, &self.dt_bias)?;
         let (g, beta) = (g.squeeze(0)?, beta.squeeze(0)?);
 
-        let q = q_conv.reshape((token_count, self.num_k_heads, self.head_k_dim))?;
-        let k = k_conv.reshape((token_count, self.num_k_heads, self.head_k_dim))?;
-        let v = v_conv.reshape((token_count, self.num_v_heads, self.head_v_dim))?;
+        let q: Tensor = q_conv.reshape((token_count, self.num_k_heads, self.head_k_dim))?;
+        let k: Tensor = k_conv.reshape((token_count, self.num_k_heads, self.head_k_dim))?;
+        let v: Tensor = v_conv.reshape((token_count, self.num_v_heads, self.head_v_dim))?;
         let q = gdn::l2_norm_last_dim(&q, 1e-6)?;
         let k = gdn::l2_norm_last_dim(&k, 1e-6)?;
         let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
@@ -534,11 +536,11 @@ impl GatedDeltaNet {
             )?
         } else {
             let batch = slot_count;
-            let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
-            let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
-            let v_b = v.reshape((batch, self.num_v_heads, self.head_v_dim))?;
-            let g_b = g.reshape((batch, self.num_v_heads))?;
-            let beta_b = beta.reshape((batch, self.num_v_heads))?;
+            let q_b: Tensor = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
+            let k_b: Tensor = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
+            let v_b: Tensor = v.reshape((batch, self.num_v_heads, self.head_v_dim))?;
+            let g_b: Tensor = g.reshape((batch, self.num_v_heads))?;
+            let beta_b: Tensor = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
             gdn::gated_delta_rule_decode_slots(
                 &q_b,
@@ -566,5 +568,16 @@ impl GatedDeltaNet {
 
         // Output projection
         self.out_proj.forward(&gated_output.to_dtype(xs.dtype())?)
+    }
+
+    #[cfg(not(any(feature = "cuda", feature = "metal")))]
+    pub fn forward(
+        &self,
+        _xs: &Tensor,
+        _mamba_cache: &mut MambaCache,
+        _input_metadata: &InputMetadata,
+        _seq_slots: &Tensor,
+    ) -> Result<Tensor> {
+        candle_core::bail!("GatedDeltaNet requires CUDA or Metal backend")
     }
 }

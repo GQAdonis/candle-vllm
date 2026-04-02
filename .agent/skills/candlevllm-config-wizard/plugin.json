@@ -1,0 +1,23 @@
+{
+  "name": "candlevllm-config-wizard",
+  "version": "1.0.0",
+  "description": "Interactive configuration wizard for candle-vllm inference server",
+  "author": "GQAdonis",
+  "triggers": [
+    "config wizard",
+    "generate models.yaml",
+    "configure candle-vllm",
+    "setup model"
+  ],
+  "requires": [],
+  "outputs": [
+    "models.yaml",
+    ".env"
+  ],
+  "tags": [
+    "configuration",
+    "yaml",
+    "inference",
+    "llm"
+  ]
+}

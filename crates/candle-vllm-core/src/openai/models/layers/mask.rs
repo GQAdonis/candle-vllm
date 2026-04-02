@@ -21,7 +21,7 @@ fn get_casual_mask_internal(
     tgt_len: usize,
     sliding_window: Option<usize>,
 ) -> candle_core::Result<Tensor> {
-    use attention_rs::mask::causal_mask;
+    use crate::attention::mask::causal_mask;
     let mask = Tensor::zeros((tgt_len, tgt_len), dtype, device)?;
     let _ = causal_mask(&mask, sliding_window)?;
     mask.unsqueeze(0)?.unsqueeze(0)

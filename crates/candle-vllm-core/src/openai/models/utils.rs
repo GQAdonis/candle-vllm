@@ -1,4 +1,4 @@
-use attention_rs::mamba_cache::MambaCache;
+use crate::attention::mamba_cache::MambaCache;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::RmsNorm;

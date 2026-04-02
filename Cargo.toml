@@ -4,6 +4,8 @@ members = [
     "crates/candle-vllm-openai",
     "crates/candle-vllm-responses",
     "crates/candle-vllm-server",
+    "crates/candle-vllm-kernels",
+    "crates/candle-vllm-metal-kernels",
 ]
 exclude = [
     "examples/ai_gateway",
@@ -22,12 +24,13 @@ rust-version = "1.92"
 anyhow = "1.0.75"
 async-trait = "0.1.77"
 async-stream = "0.3"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version = "0.4.3", rev = "8181868" }
 axum = { version = "0.8.7", features = ["tokio"] }
 chrono = "0.4.41"
 clap = { version = "4.4.7", features = ["derive"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
+candle-core = { path = "../candle/candle-core", version = "0.10.2" }
+candle-nn = { path = "../candle/candle-nn", version = "0.10.2" }
+candle-vllm-kernels = { path = "crates/candle-vllm-kernels" }
+candle-vllm-metal-kernels = { path = "crates/candle-vllm-metal-kernels" }
 derive_more = "0.99.17"
 dirs = "6.0.0"
 dyn-fmt = "0.4.0"
@@ -87,6 +90,9 @@ prometheus_parking_lot = { git = "https://github.com/Prometheus-AGS/prometheus-p
 # TurboQuant KV-cache compression (ICLR 2026, Google Research)
 turboquant = { git = "https://github.com/GQAdonis/turboquant-rs.git", features = ["simd"] }
 
+# FlashAttention-2 paged KV / varlen (same crate stack as guoqingbao/attention.rs); `guoqingbao/candle` is patched below to the workspace fork.
+flashattn-rs = { git = "https://github.com/guoqingbao/flashattn.rs.git", rev = "7b2fbbd509656368e39905272cebf32f4c8d50cf", default-features = false }
+
 [package]
 name = "candle-vllm"
 version = "0.5.1"
@@ -108,7 +114,6 @@ candle-vllm-server = { path = "crates/candle-vllm-server" }
 candle-vllm-core = { path = "crates/candle-vllm-core" }
 candle-vllm-openai = { path = "crates/candle-vllm-openai" }
 candle-vllm-responses = { path = "crates/candle-vllm-responses" }
-attention-rs = { workspace = true }
 candle-core = { workspace = true }
 crossbeam = { workspace = true }
 futures = { workspace = true }
@@ -134,8 +139,13 @@ metal = ["candle-vllm-core/metal", "candle-vllm-openai/metal", "candle-vllm-serv
 cudnn = ["candle-vllm-core/cudnn"]
 flash-attn = ["candle-vllm-core/flash-attn", "candle-vllm-openai/flash-attn"]
 flash-decoding = ["candle-vllm-core/flash-decoding", "candle-vllm-openai/flash-decoding"]
-flashinfer = []
+flashinfer = ["candle-vllm-core/flashinfer"]
 mkl = ["candle-vllm-core/mkl"]
 nccl = ["candle-vllm-core/nccl", "candle-vllm-openai/nccl", "candle-vllm-server/nccl"]
 mpi = ["candle-vllm-core/mpi", "candle-vllm-openai/mpi", "candle-vllm-server/mpi"]
 graph = ["candle-vllm-core/graph"]
+
+# `flashattn-rs` depends on guoqingbao/candle; redirect to our GQAdonis/candle workspace fork.
+[patch."https://github.com/guoqingbao/candle.git"]
+candle-core = { path = "../candle/candle-core" }
+candle-nn = { path = "../candle/candle-nn" }

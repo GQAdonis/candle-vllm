@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::ptr;
 use std::sync::Arc;
 
-use attention_rs::InputMetadata;
+use crate::attention::InputMetadata;
 use candle_core::cuda_backend::cudarc::driver::sys;
 use candle_core::cuda_backend::cudarc::driver::sys::{
     lib, CUgraphInstantiate_flags, CUmemPool_attribute, CUmemoryPool, CUstreamCaptureMode,
@@ -173,7 +173,7 @@ where
         let mut pool: CUmemoryPool = ptr::null_mut();
         unsafe {
             lib()
-                .cuDeviceGetDefaultMemPool(&mut pool, *self.device.cu_device())
+                .cuDeviceGetDefaultMemPool(&mut pool, self.device.cu_device())
                 .result()
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("cuDeviceGetDefaultMemPool failed: {e:?}"))
@@ -207,7 +207,7 @@ where
             if status != CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_ACTIVE {
                 let pool = self.create_capture_pool()?;
                 lib()
-                    .cuDeviceSetMemPool(*self.device.cu_device(), pool)
+                    .cuDeviceSetMemPool(self.device.cu_device(), pool)
                     .result()
                     .map_err(|e| {
                         candle_core::Error::Msg(format!("cuDeviceSetMemPool failed: {e:?}"))
@@ -463,7 +463,7 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                         }
                         let kv_len_arr_host = kv_len_arr_host_bs.clone();
                         (
-                            Some(attention_rs::flashinfer::decode_plan(
+                            Some(crate::attention::flashinfer::decode_plan(
                                 device,
                                 params.kv_dtype,
                                 params.out_dtype,
@@ -483,7 +483,7 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                         (None, None)
                     };
 
-                Some(attention_rs::FlashInferMetadata {
+                Some(crate::attention::FlashInferMetadata {
                     indptr: flashinfer_indptr.narrow(0, 0, bs + 1)?,
                     indptr_host,
                     indices: flashinfer_indices.narrow(0, 0, bs * max_num_blocks)?,
@@ -654,7 +654,7 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                             .device
                             .as_ref()
                             .ok_or_else(|| candle_core::Error::msg("graph device is missing"))?;
-                        let _ = attention_rs::flashinfer::decode_plan(
+                        let _ = crate::attention::flashinfer::decode_plan(
                             dev,
                             params.kv_dtype,
                             params.out_dtype,
