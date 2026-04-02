@@ -85,7 +85,7 @@ tool-parser = "1.1.1"
 prometheus_parking_lot = { git = "https://github.com/Prometheus-AGS/prometheus-parking-lot-rs.git" }
 
 # TurboQuant KV-cache compression (ICLR 2026, Google Research)
-turboquant = { path = "../turboquant-rs", features = ["simd"] }
+turboquant = { git = "https://github.com/GQAdonis/turboquant-rs.git", features = ["simd"] }
 
 [package]
 name = "candle-vllm"
