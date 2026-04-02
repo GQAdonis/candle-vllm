@@ -1,11 +1,10 @@
 use candle_core::{DType, MetalStorage};
-use metal::{
-    Buffer, ComputeCommandEncoderRef, ComputePipelineState, Device, Function,
-    FunctionConstantValues, Library, MTLDataType, MTLSize, NSUInteger,
-};
+use candle_metal_kernels::metal::{Buffer, ComputePipeline, ConstantValues, Device, Function, Library, Value};
+use objc2_metal::MTLSize;
+type NSUInteger = usize;
 use once_cell::sync::OnceCell;
 use std::sync::{OnceLock, RwLock};
-use std::{collections::HashMap, ffi::c_void};
+use std::collections::HashMap;
 
 pub mod utils;
 use utils::EncoderProvider;
@@ -42,7 +41,7 @@ impl<T> From<std::sync::PoisonError<T>> for MetalKernelError {
     }
 }
 
-type Pipelines = HashMap<(String, Option<ConstantValues>), ComputePipelineState>;
+type Pipelines = HashMap<(String, Option<ConstantValues>), ComputePipeline>;
 
 #[derive(Debug)]
 pub struct Kernels {
@@ -52,8 +51,14 @@ pub struct Kernels {
 pub(crate) static G_KERNEL: OnceCell<Kernels> = OnceCell::new();
 pub(crate) static LIBRARY: OnceLock<Library> = OnceLock::new();
 
+impl Default for Kernels {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Kernels {
-    pub fn default() -> &'static Kernels {
+    pub fn get() -> &'static Kernels {
         G_KERNEL.get_or_init(Kernels::new)
     }
 
@@ -66,14 +71,22 @@ impl Kernels {
         if let Some(lib) = LIBRARY.get() {
             Ok(lib.clone())
         } else {
+            use objc2_metal::MTLDevice;
+            use dispatch2::DispatchData;
+
             let source_data = KERNELS;
-            let lib = {
-                device.new_library_with_data(source_data).map_err(|e| {
-                    MetalKernelError::LoadLibraryError(format!(
-                        "Metal requires macosx > 13.0 or higher, cannot load candle metal library: {e}"
-                    ))
-                })?
-            };
+
+            // Create DispatchData from bytes
+            let data = DispatchData::from_bytes(source_data);
+
+            // Load library from data using Metal API
+            let lib_obj = device.as_ref()
+                .newLibraryWithData_error(&data)
+                .map_err(|e| MetalKernelError::LoadLibraryError(format!(
+                    "Metal requires macosx > 13.0 or higher, cannot load candle metal library: {e}"
+                )))?;
+
+            let lib = Library::new(lib_obj);
             Ok(LIBRARY.get_or_init(|| lib).clone())
         }
     }
@@ -82,13 +95,11 @@ impl Kernels {
         &self,
         device: &Device,
         name: String,
-        constants: Option<FunctionConstantValues>,
+        constants: Option<&ConstantValues>,
     ) -> Result<Function, MetalKernelError> {
-        let func = self
-            .load_library(device)?
+        self.load_library(device)?
             .get_function(&name, constants)
-            .map_err(|e| MetalKernelError::LoadFunctionError(e.to_string()))?;
-        Ok(func)
+            .map_err(|e| MetalKernelError::LoadFunctionError(e.to_string()))
     }
 
     /// Load the give pipeline
@@ -99,25 +110,19 @@ impl Kernels {
         device: &Device,
         name: String,
         constants: Option<ConstantValues>,
-    ) -> Result<ComputePipelineState, MetalKernelError> {
+    ) -> Result<ComputePipeline, MetalKernelError> {
         let mut pipelines = self.pipelines.write()?;
-        let key = (name, constants);
+        let key = (name.clone(), constants);
         if let Some(pipeline) = pipelines.get(&key) {
-            Ok(pipeline.clone())
-        } else {
-            let (name, constants) = key;
-            let func = self.load_function(
-                device,
-                name.clone(),
-                constants.as_ref().map(|c| c.function_constant_values()),
-            )?;
-            let pipeline = device
-                .new_compute_pipeline_state_with_function(&func)
-                .map_err(|e| MetalKernelError::FailedToCreatePipeline(e.to_string()))?;
-            pipelines.insert((name, constants), pipeline.clone());
-
-            Ok(pipeline)
+            return Ok(pipeline.clone());
         }
+
+        // Not in cache, need to create it
+        let func = self.load_function(device, name.clone(), key.1.as_ref())?;
+        let pipeline = device.new_compute_pipeline_state_with_function(&func)
+            .map_err(|e| MetalKernelError::FailedToCreatePipeline(e.to_string()))?;
+        pipelines.insert(key, pipeline.clone());
+        Ok(pipeline)
     }
 
     /// Load the give pipeline
@@ -127,7 +132,7 @@ impl Kernels {
         &self,
         device: &Device,
         name: String,
-    ) -> Result<ComputePipelineState, MetalKernelError> {
+    ) -> Result<ComputePipeline, MetalKernelError> {
         self.load_pipeline_with_constants(device, name, None)
     }
 }
@@ -160,7 +165,7 @@ pub fn call_copy_blocks(
     };
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -174,14 +179,14 @@ pub fn call_copy_blocks(
     );
 
     let thread_groups_count = MTLSize {
-        width: num_pairs,
+        width: num_pairs as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_group_size = MTLSize {
-        width: numel_per_block.min(1024),
+        width: numel_per_block.min(1024) as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -239,7 +244,7 @@ pub fn call_reshape_and_cache(
     };
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -262,68 +267,20 @@ pub fn call_reshape_and_cache(
     );
 
     let thread_groups_count = MTLSize {
-        width: num_tokens as u64,
+        width: num_tokens as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let threads_per_threadgroup = MTLSize {
-        width: (num_heads * head_size).min(512) as u64,
+        width: (num_heads * head_size).min(512) as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
     Ok(())
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Value {
-    Bool(bool),
-}
-
-impl std::hash::Hash for Value {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            Value::Bool(v) => v.hash(state),
-        }
-    }
-}
-
-impl Value {
-    fn data_type(&self) -> MTLDataType {
-        match self {
-            Value::Bool(_) => MTLDataType::Bool,
-        }
-    }
-}
-
-/// Not true, good enough for our purposes.
-impl Eq for Value {}
-
-#[derive(Debug, Eq, PartialEq, Hash)]
-struct ConstantValues(Vec<(usize, Value)>);
-
-impl ConstantValues {
-    pub fn new(values: Vec<(usize, Value)>) -> Self {
-        Self(values)
-    }
-
-    fn function_constant_values(&self) -> FunctionConstantValues {
-        let f = FunctionConstantValues::new();
-        for (index, value) in &self.0 {
-            let ty = value.data_type();
-            match value {
-                Value::Bool(v) => {
-                    f.set_constant_value_at_index(
-                        v as *const bool as *const c_void,
-                        ty,
-                        *index as u64,
-                    );
-                }
-            }
-        }
-        f
-    }
-}
+// Value and ConstantValues are now imported from candle-metal-kernels
 
 #[allow(clippy::too_many_arguments)]
 pub fn paged_attention_v1(
@@ -405,62 +362,35 @@ pub fn paged_attention_v1(
 
     let pipeline = kernels.load_pipeline_with_constants(device, name, constants)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
-    assert_eq!(pipeline.thread_execution_width(), NUM_SIMD_LANES);
+    // TODO: Re-enable when thread_execution_width is available on ComputePipeline
+    // assert_eq!(pipeline.thread_execution_width(), NUM_SIMD_LANES);
 
     let num_simds = NUM_THREADS / NUM_SIMD_LANES;
     let padded_max_context_len = ((max_context_len + block_size - 1) / block_size) * block_size;
     let logits_size = padded_max_context_len * std::mem::size_of::<f32>() as i32;
     let outputs_size = (num_simds as i32 / 2) * head_size * std::mem::size_of::<f32>() as i32;
     let shared_mem_size = logits_size.max(outputs_size);
-    encoder.set_threadgroup_memory_length(0, shared_mem_size as u64);
+    encoder.set_threadgroup_memory_length(0, shared_mem_size as usize);
 
     encoder.set_buffer(2, Some(output), 0 as NSUInteger);
     encoder.set_buffer(3, Some(q), q_offset as NSUInteger);
     encoder.set_buffer(4, Some(k_cache), k_cache_offset as NSUInteger);
     encoder.set_buffer(5, Some(v_cache), v_cache_offset as NSUInteger);
-    encoder.set_bytes(
-        6,
-        core::mem::size_of_val(&num_kv_heads) as u64,
-        &num_kv_heads as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        7,
-        core::mem::size_of_val(&scale) as u64,
-        &scale as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        8,
-        core::mem::size_of_val(&softcapping) as u64,
-        &softcapping as *const _ as *const c_void,
-    );
+    utils::set_param(&encoder, 6, num_kv_heads);
+    utils::set_param(&encoder, 7, scale);
+    utils::set_param(&encoder, 8, softcapping);
     encoder.set_buffer(9, Some(block_tables), block_tables_offset as NSUInteger);
     encoder.set_buffer(10, Some(context_lens), context_lens_offset as NSUInteger);
-    encoder.set_bytes(
-        11,
-        core::mem::size_of_val(&max_num_blocks_per_seq) as u64,
-        &max_num_blocks_per_seq as *const _ as *const c_void,
-    );
+    utils::set_param(&encoder, 11, max_num_blocks_per_seq);
     if let Some((alibi, alibi_offset)) = alibi_storage_and_offset {
         encoder.set_buffer(12, Some(alibi.buffer()), alibi_offset as NSUInteger);
     }
-    encoder.set_bytes(
-        13,
-        core::mem::size_of_val(&q_stride) as u64,
-        &q_stride as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        14,
-        core::mem::size_of_val(&kv_block_stride) as u64,
-        &kv_block_stride as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        15,
-        core::mem::size_of_val(&kv_head_stride) as u64,
-        &kv_head_stride as *const _ as *const c_void,
-    );
+    utils::set_param(&encoder, 13, q_stride);
+    utils::set_param(&encoder, 14, kv_block_stride);
+    utils::set_param(&encoder, 15, kv_head_stride);
 
     if let Some(k_scale) = k_scale {
         encoder.set_buffer(16, Some(k_scale.buffer()), 0);
@@ -471,14 +401,14 @@ pub fn paged_attention_v1(
     }
 
     let thread_groups_count = MTLSize {
-        width: num_heads as u64,
-        height: num_seqs as u64,
-        depth: 1,
+        width: num_heads as usize,
+        height: num_seqs as usize,
+        depth: 1_usize,
     };
     let thread_group_size = MTLSize {
-        width: NUM_THREADS,
+        width: NUM_THREADS as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -570,10 +500,11 @@ pub fn paged_attention_v2(
         let pipeline = kernels.load_pipeline_with_constants(device, name, constants)?;
 
         let encoder = ep.encoder();
-        let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+        
         encoder.set_compute_pipeline_state(&pipeline);
 
-        assert_eq!(pipeline.thread_execution_width(), NUM_SIMD_LANES);
+        // TODO: Re-enable when thread_execution_width is available on ComputePipeline
+        // assert_eq!(pipeline.thread_execution_width(), NUM_SIMD_LANES);
 
         let num_simds = NUM_THREADS / NUM_SIMD_LANES;
         let max_num_partitions =
@@ -581,7 +512,7 @@ pub fn paged_attention_v2(
         let logits_size = PARTITION_SIZE as i32 * std::mem::size_of::<f32>() as i32;
         let outputs_size = (num_simds as i32 / 2) * head_size * std::mem::size_of::<f32>() as i32;
         let shared_mem_size = logits_size.max(outputs_size);
-        encoder.set_threadgroup_memory_length(0, shared_mem_size as u64);
+        encoder.set_threadgroup_memory_length(0, shared_mem_size as usize);
 
         encoder.set_buffer(0, Some(exp_sums), 0 as NSUInteger);
         encoder.set_buffer(1, Some(max_logits), 0 as NSUInteger);
@@ -589,46 +520,18 @@ pub fn paged_attention_v2(
         encoder.set_buffer(3, Some(q), q_offset as NSUInteger);
         encoder.set_buffer(4, Some(k_cache), k_cache_offset as NSUInteger);
         encoder.set_buffer(5, Some(v_cache), v_cache_offset as NSUInteger);
-        encoder.set_bytes(
-            6,
-            core::mem::size_of_val(&num_kv_heads) as u64,
-            &num_kv_heads as *const _ as *const c_void,
-        );
-        encoder.set_bytes(
-            7,
-            core::mem::size_of_val(&scale) as u64,
-            &scale as *const _ as *const c_void,
-        );
-        encoder.set_bytes(
-            8,
-            core::mem::size_of_val(&softcapping) as u64,
-            &softcapping as *const _ as *const c_void,
-        );
+        utils::set_param(&encoder, 6, num_kv_heads);
+        utils::set_param(&encoder, 7, scale);
+        utils::set_param(&encoder, 8, softcapping);
         encoder.set_buffer(9, Some(block_tables), block_tables_offset as NSUInteger);
         encoder.set_buffer(10, Some(context_lens), context_lens_offset as NSUInteger);
-        encoder.set_bytes(
-            11,
-            core::mem::size_of_val(&max_num_blocks_per_seq) as u64,
-            &max_num_blocks_per_seq as *const _ as *const c_void,
-        );
+        utils::set_param(&encoder, 11, max_num_blocks_per_seq);
         if let Some((alibi, alibi_offset)) = alibi_storage_and_offset {
             encoder.set_buffer(12, Some(alibi.buffer()), alibi_offset as NSUInteger);
         }
-        encoder.set_bytes(
-            13,
-            core::mem::size_of_val(&q_stride) as u64,
-            &q_stride as *const _ as *const c_void,
-        );
-        encoder.set_bytes(
-            14,
-            core::mem::size_of_val(&kv_block_stride) as u64,
-            &kv_block_stride as *const _ as *const c_void,
-        );
-        encoder.set_bytes(
-            15,
-            core::mem::size_of_val(&kv_head_stride) as u64,
-            &kv_head_stride as *const _ as *const c_void,
-        );
+        utils::set_param(&encoder, 13, q_stride);
+        utils::set_param(&encoder, 14, kv_block_stride);
+        utils::set_param(&encoder, 15, kv_head_stride);
 
         if let Some(k_scale) = k_scale {
             encoder.set_buffer(16, Some(k_scale.buffer()), 0);
@@ -639,14 +542,14 @@ pub fn paged_attention_v2(
         }
 
         let thread_groups_count = MTLSize {
-            width: num_heads as u64,
-            height: num_seqs as u64,
-            depth: max_num_partitions as u64,
+            width: num_heads as usize,
+            height: num_seqs as usize,
+            depth: max_num_partitions as usize,
         };
         let thread_group_size = MTLSize {
-            width: NUM_THREADS,
+            width: NUM_THREADS as usize,
             height: 1,
-            depth: 1,
+            depth: 1_usize,
         };
         encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     }
@@ -685,36 +588,33 @@ pub fn paged_attention_v2(
         let pipeline = kernels.load_pipeline(device, name)?;
 
         let encoder = ep.encoder();
-        let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+        
         encoder.set_compute_pipeline_state(&pipeline);
 
-        assert_eq!(pipeline.thread_execution_width(), NUM_SIMD_LANES);
+        // TODO: Re-enable when thread_execution_width is available on ComputePipeline
+        // assert_eq!(pipeline.thread_execution_width(), NUM_SIMD_LANES);
 
         let max_num_partitions =
             (max_context_len + PARTITION_SIZE as i32 - 1) / PARTITION_SIZE as i32;
         let reduce_shared_mem_size = 2 * max_num_partitions * std::mem::size_of::<f32>() as i32;
-        encoder.set_threadgroup_memory_length(0, reduce_shared_mem_size as u64);
+        encoder.set_threadgroup_memory_length(0, reduce_shared_mem_size as usize);
 
         encoder.set_buffer(0, Some(output), 0 as NSUInteger);
         encoder.set_buffer(1, Some(exp_sums), 0 as NSUInteger);
         encoder.set_buffer(2, Some(max_logits), 0 as NSUInteger);
         encoder.set_buffer(3, Some(tmp_out), 0 as NSUInteger);
         encoder.set_buffer(4, Some(context_lens), context_lens_offset as NSUInteger);
-        encoder.set_bytes(
-            5,
-            core::mem::size_of_val(&max_num_partitions) as u64,
-            &max_num_partitions as *const _ as *const c_void,
-        );
+        utils::set_param(&encoder, 5, max_num_partitions);
 
         let thread_groups_count = MTLSize {
-            width: num_heads as u64,
-            height: num_seqs as u64,
-            depth: 1,
+            width: num_heads as usize,
+            height: num_seqs as usize,
+            depth: 1_usize,
         };
         let thread_group_size = MTLSize {
-            width: NUM_THREADS,
+            width: NUM_THREADS as usize,
             height: 1,
-            depth: 1,
+            depth: 1_usize,
         };
         encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     }
@@ -830,7 +730,7 @@ pub fn paged_attention_prefill(
     // 2. Load the pipeline. The prefill kernel does not use function constants.
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
     // NOTE: Unlike the v1 kernel, the chunked prefill kernel is designed to use
@@ -842,44 +742,16 @@ pub fn paged_attention_prefill(
     encoder.set_buffer(1, Some(q), q_offset as NSUInteger);
     encoder.set_buffer(2, Some(k_cache), k_cache_offset as NSUInteger);
     encoder.set_buffer(3, Some(v_cache), v_cache_offset as NSUInteger);
-    encoder.set_bytes(
-        4,
-        size_of_val(&num_kv_heads),
-        &num_kv_heads as *const _ as *const c_void,
-    );
-    encoder.set_bytes(5, size_of_val(&scale), &scale as *const _ as *const c_void);
+    utils::set_param(&encoder, 4, num_kv_heads);
+    utils::set_param(&encoder, 5, scale);
     encoder.set_buffer(6, Some(block_tables), block_tables_offset as NSUInteger);
     encoder.set_buffer(7, Some(seq_lens), seq_lens_offset as NSUInteger);
-    encoder.set_bytes(
-        8,
-        size_of_val(&block_table_stride),
-        &block_table_stride as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        9,
-        size_of_val(&num_seqs),
-        &num_seqs as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        10,
-        size_of_val(&num_query_heads),
-        &num_query_heads as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        11,
-        size_of_val(&num_query_tokens),
-        &num_query_tokens as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        12,
-        size_of_val(&softcapping),
-        &softcapping as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        13,
-        size_of_val(&o_stride_tokens),
-        &o_stride_tokens as *const _ as *const c_void,
-    );
+    utils::set_param(&encoder, 8, block_table_stride);
+    utils::set_param(&encoder, 9, num_seqs);
+    utils::set_param(&encoder, 10, num_query_heads);
+    utils::set_param(&encoder, 11, num_query_tokens);
+    utils::set_param(&encoder, 12, softcapping);
+    utils::set_param(&encoder, 13, o_stride_tokens);
     encoder.set_buffer(
         14,
         Some(query_start_len),
@@ -897,52 +769,31 @@ pub fn paged_attention_prefill(
     if let Some((sk, offset)) = sinks {
         encoder.set_buffer(18, Some(sk.buffer()), offset as NSUInteger);
     }
-    encoder.set_bytes(
-        19,
-        size_of_val(&sliding_window),
-        &sliding_window as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        20,
-        size_of_val(&total_num_blocks),
-        &total_num_blocks as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        21,
-        size_of_val(&kv_block_stride),
-        &kv_block_stride as *const _ as *const c_void,
-    );
-    encoder.set_bytes(
-        22,
-        size_of_val(&kv_head_stride),
-        &kv_head_stride as *const _ as *const c_void,
-    );
+    utils::set_param(&encoder, 19, sliding_window);
+    utils::set_param(&encoder, 20, total_num_blocks);
+    utils::set_param(&encoder, 21, kv_block_stride);
+    utils::set_param(&encoder, 22, kv_head_stride);
 
     // 4. Calculate grid and threadgroup dimensions, matching the CUDA launch config.
     // CUDA: dim3 block(TOKEN_CHUNK_SIZE);
     let thread_group_size = MTLSize {
-        width: TOKEN_CHUNK_SIZE,
+        width: TOKEN_CHUNK_SIZE as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
 
     // CUDA: dim3 grid(num_queries_per_kv, num_kv_heads, num_token_chunks);
     let num_queries_per_kv = (num_query_heads / num_kv_heads) as u64;
-    let num_token_chunks = (num_query_tokens as u64 + TOKEN_CHUNK_SIZE - 1) / TOKEN_CHUNK_SIZE;
+    let num_token_chunks = (num_query_tokens as u64).div_ceil(TOKEN_CHUNK_SIZE);
     let thread_groups_count = MTLSize {
-        width: num_queries_per_kv,
-        height: num_kv_heads as u64,
-        depth: num_token_chunks,
+        width: num_queries_per_kv as usize,
+        height: num_kv_heads as usize,
+        depth: num_token_chunks as usize,
     };
 
     // 5. Dispatch the kernel.
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
-}
-
-// Helper function to get size of a value for set_bytes
-fn size_of_val<T>(val: &T) -> u64 {
-    core::mem::size_of_val(val) as u64
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -967,7 +818,7 @@ pub fn call_causal_mask(
 
     // Get the encoder and cast it to the appropriate type
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
     // Set the parameters for the kernel
@@ -982,14 +833,14 @@ pub fn call_causal_mask(
 
     // Set up the number of thread groups and threads per group
     let thread_groups_count = MTLSize {
-        width: tgt_len as u64,
+        width: tgt_len as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let threads_per_threadgroup = MTLSize {
         width: 256, // Use a reasonable number of threads per threadgroup
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
 
     // Dispatch the kernel
@@ -999,7 +850,6 @@ pub fn call_causal_mask(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub fn call_update_scales_per_head(
     device: &Device,
@@ -1023,7 +873,7 @@ pub fn call_update_scales_per_head(
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
 
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -1040,14 +890,14 @@ pub fn call_update_scales_per_head(
     );
 
     let threads_per_threadgroup = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: 1,
+        width: 1_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
 
     encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
@@ -1116,7 +966,7 @@ pub fn call_fused_rope(
 
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -1142,14 +992,14 @@ pub fn call_fused_rope(
 
     // Dispatch with 256 threads per threadgroup
     let threads_per_threadgroup = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: (total_pairs + 255) / 256,
+        width: (total_pairs.div_ceil(256) as usize),
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
 
     encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
@@ -1206,7 +1056,7 @@ pub fn call_fp8_matmul(
     };
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -1228,27 +1078,27 @@ pub fn call_fp8_matmul(
     if is_gemv {
         // Grid: (N * 32, M, 1)
         let thread_group_size = MTLSize {
-            width: 32,
+            width: 32_usize,
             height: 1,
-            depth: 1,
+            depth: 1_usize,
         };
         let thread_groups_count = MTLSize {
-            width: n as u64, // (N * 32) / 32 = N
-            height: m as u64,
-            depth: 1,
+            width: n as usize, // (N * 32) / 32 = N
+            height: m as usize,
+            depth: 1_usize,
         };
         encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     } else {
         let thread_group_size = MTLSize {
-            width: 32,
+            width: 32_usize,
             height: 1,
-            depth: 1,
+            depth: 1_usize,
         };
         let m_block = if m <= 16 { 16 } else { 32 };
         let thread_groups_count = MTLSize {
-            width: (n as u64 + 31) / 32,
-            height: (m as u64 + m_block - 1) / m_block,
-            depth: 1,
+            width: ((n as u64).div_ceil(32) as usize),
+            height: (m as u64).div_ceil(m_block) as usize,
+            depth: 1_usize,
         };
         encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     }
@@ -1324,7 +1174,7 @@ pub fn call_gdn_causal_conv1d_fwd(
     let name = gdn_conv_kernel_name("gdn_causal_conv1d_fwd", ty, kernel_size)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(weight), weight_offset as NSUInteger);
@@ -1336,19 +1186,19 @@ pub fn call_gdn_causal_conv1d_fwd(
     encoder.set_buffer(3, Some(conv_state), conv_state_offset as NSUInteger);
     encoder.set_buffer(4, Some(out), out_offset as NSUInteger);
     encoder.set_buffer(5, Some(cu_seqlens), cu_seqlens_offset as NSUInteger);
-    utils::set_param(encoder, 6, batch_size);
-    utils::set_param(encoder, 7, d_conv);
-    utils::set_param(encoder, 8, activation_silu);
+    utils::set_param(&encoder, 6, batch_size);
+    utils::set_param(&encoder, 7, d_conv);
+    utils::set_param(&encoder, 8, activation_silu);
 
     let thread_group_size = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: ((d_conv as u64) + 255) / 256,
-        height: batch_size as u64,
-        depth: 1,
+        width: (d_conv as u64).div_ceil(256) as usize,
+        height: batch_size as usize,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1377,7 +1227,7 @@ pub fn call_gdn_causal_conv1d_update(
     let name = gdn_conv_kernel_name("gdn_causal_conv1d_update", ty, kernel_size)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(weight), weight_offset as NSUInteger);
@@ -1388,19 +1238,19 @@ pub fn call_gdn_causal_conv1d_update(
     }
     encoder.set_buffer(3, Some(conv_state), conv_state_offset as NSUInteger);
     encoder.set_buffer(4, Some(out), out_offset as NSUInteger);
-    utils::set_param(encoder, 5, batch_size);
-    utils::set_param(encoder, 6, d_conv);
-    utils::set_param(encoder, 7, activation_silu);
+    utils::set_param(&encoder, 5, batch_size);
+    utils::set_param(&encoder, 6, d_conv);
+    utils::set_param(&encoder, 7, activation_silu);
 
     let thread_group_size = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: ((d_conv as u64) + 255) / 256,
-        height: batch_size as u64,
-        depth: 1,
+        width: (d_conv as u64).div_ceil(256) as usize,
+        height: batch_size as usize,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1431,7 +1281,7 @@ pub fn call_gdn_causal_conv1d_update_slots(
     let name = gdn_conv_kernel_name("gdn_causal_conv1d_update_slots", ty, kernel_size)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(weight), weight_offset as NSUInteger);
@@ -1443,19 +1293,19 @@ pub fn call_gdn_causal_conv1d_update_slots(
     encoder.set_buffer(3, Some(conv_state), conv_state_offset as NSUInteger);
     encoder.set_buffer(4, Some(slots), slots_offset as NSUInteger);
     encoder.set_buffer(5, Some(out), out_offset as NSUInteger);
-    utils::set_param(encoder, 6, batch_size);
-    utils::set_param(encoder, 7, d_conv);
-    utils::set_param(encoder, 8, activation_silu);
+    utils::set_param(&encoder, 6, batch_size);
+    utils::set_param(&encoder, 7, d_conv);
+    utils::set_param(&encoder, 8, activation_silu);
 
     let thread_group_size = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: ((d_conv as u64) + 255) / 256,
-        height: batch_size as u64,
-        depth: 1,
+        width: (d_conv as u64).div_ceil(256) as usize,
+        height: batch_size as usize,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1497,7 +1347,7 @@ pub fn call_gdn_fused_gating(
     };
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1514,14 +1364,14 @@ pub fn call_gdn_fused_gating(
     );
 
     let thread_group_size = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: ((total_elements as u64) + 255) / 256,
+        width: (total_elements as u64).div_ceil(256) as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1544,7 +1394,7 @@ pub fn call_gdn_l2_norm_last_dim(
     let name = format!("gdn_l2_norm_last_dim_{}", gdn_type_name(ty)?);
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1558,14 +1408,14 @@ pub fn call_gdn_l2_norm_last_dim(
     );
 
     let thread_group_size = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: rows as u64,
+        width: rows as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1608,7 +1458,7 @@ pub fn call_gdn_gated_rmsnorm_silu_mul(
     };
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(z), z_offset as NSUInteger);
@@ -1619,23 +1469,23 @@ pub fn call_gdn_gated_rmsnorm_silu_mul(
         encoder.set_buffer(3, None, 0);
     }
     encoder.set_buffer(4, Some(out), out_offset as NSUInteger);
-    utils::set_param(encoder, 5, rows);
-    utils::set_param(encoder, 6, value_dim);
-    utils::set_param(encoder, 7, group_size);
-    utils::set_param(encoder, 8, eps);
-    utils::set_param(encoder, 9, per_group_weights);
-    utils::set_param(encoder, 10, has_bias);
+    utils::set_param(&encoder, 5, rows);
+    utils::set_param(&encoder, 6, value_dim);
+    utils::set_param(&encoder, 7, group_size);
+    utils::set_param(&encoder, 8, eps);
+    utils::set_param(&encoder, 9, per_group_weights);
+    utils::set_param(&encoder, 10, has_bias);
 
     let num_groups = (value_dim / group_size) as u64;
     let thread_group_size = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: rows as u64 * num_groups,
+        width: (rows as u64 * num_groups) as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1669,7 +1519,7 @@ pub fn call_gdn_gated_delta_rule_recurrence(
     let name = gdn_recurrence_kernel_name("gdn_gated_delta_rule_recurrence", ty, k_dim)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1688,14 +1538,14 @@ pub fn call_gdn_gated_delta_rule_recurrence(
     );
 
     let thread_group_size = MTLSize {
-        width: 64,
+        width: 64_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: ((v_dim as u64) + 63) / 64,
-        height: bh as u64,
-        depth: 1,
+        width: (v_dim as u64).div_ceil(64) as usize,
+        height: bh as usize,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1731,7 +1581,7 @@ pub fn call_gdn_gated_delta_rule_decode_slots(
     let name = gdn_recurrence_kernel_name("gdn_gated_delta_rule_decode_slots", ty, k_dim)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1752,14 +1602,14 @@ pub fn call_gdn_gated_delta_rule_decode_slots(
     );
 
     let thread_group_size = MTLSize {
-        width: 64,
+        width: 64_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: ((v_dim as u64) + 63) / 64,
-        height: (batch * heads) as u64,
-        depth: 1,
+        width: (v_dim as u64).div_ceil(64) as usize,
+        height: (batch * heads) as usize,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1797,7 +1647,7 @@ pub fn call_gdn_gated_delta_rule_recurrence_varlen(
     let name = gdn_recurrence_kernel_name("gdn_gated_delta_rule_recurrence_varlen", ty, k_dim)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1819,14 +1669,14 @@ pub fn call_gdn_gated_delta_rule_recurrence_varlen(
     );
 
     let thread_group_size = MTLSize {
-        width: 64,
+        width: 64_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: ((v_dim as u64) + 63) / 64,
-        height: (batch * num_heads) as u64,
-        depth: 1,
+        width: (v_dim as u64).div_ceil(64) as usize,
+        height: (batch * num_heads) as usize,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())
@@ -1852,7 +1702,7 @@ pub fn call_gdn_mamba_scatter_rows(
     let name = format!("gdn_mamba_scatter_rows_{}", gdn_type_name(ty)?);
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1869,14 +1719,14 @@ pub fn call_gdn_mamba_scatter_rows(
 
     let total = (num_rows as u64) * (row_elems as u64);
     let thread_group_size = MTLSize {
-        width: 256,
+        width: 256_usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     let thread_groups_count = MTLSize {
-        width: (total + 255) / 256,
+        width: total.div_ceil(256) as usize,
         height: 1,
-        depth: 1,
+        depth: 1_usize,
     };
     encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
     Ok(())

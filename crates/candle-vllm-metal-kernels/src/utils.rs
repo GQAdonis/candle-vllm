@@ -1,8 +1,8 @@
 use candle_core::MetalStorage;
-use metal::{Buffer, ComputeCommandEncoderRef};
+use candle_metal_kernels::metal::{Buffer, Commands, ComputeCommandEncoder};
 use std::ffi::c_void;
 
-pub fn set_param<P: EncoderParam>(encoder: &ComputeCommandEncoderRef, position: u64, data: P) {
+pub fn set_param<P: EncoderParam, E: std::ops::Deref<Target = ComputeCommandEncoder>>(encoder: &E, position: usize, data: P) {
     <P as EncoderParam>::set_param(encoder, position, data)
 }
 
@@ -10,17 +10,24 @@ pub fn set_param<P: EncoderParam>(encoder: &ComputeCommandEncoderRef, position: 
 /// on a single line.
 /// Prevents getting wrong some arguments number and mixing length and size in bytes.
 pub trait EncoderParam {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self);
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self);
+}
+
+#[macro_export]
+macro_rules! set_params {
+    ($encoder:ident, ($($param:expr),+)) => (
+        let mut _index = 0;
+        $(
+            $crate::utils::set_param(&$encoder, _index, $param);
+            _index += 1;
+        )+
+    );
 }
 macro_rules! primitive {
     ($type:ty) => {
         impl EncoderParam for $type {
-            fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
-                encoder.set_bytes(
-                    position,
-                    core::mem::size_of::<$type>() as u64,
-                    &data as *const $type as *const c_void,
-                );
+            fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
+                encoder.set_bytes(position, &data);
             }
         }
     };
@@ -39,125 +46,89 @@ pub struct BufferOffset<'a> {
 }
 
 impl<T> EncoderParam for &[T] {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
-        encoder.set_bytes(
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
+        encoder.set_bytes_directly(
             position,
-            core::mem::size_of_val(data) as u64,
+            core::mem::size_of_val(data),
             data.as_ptr() as *const c_void,
         );
     }
 }
 
 impl EncoderParam for &Buffer {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
         encoder.set_buffer(position, Some(data), 0);
     }
 }
 
 impl EncoderParam for (&Buffer, usize) {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
-        encoder.set_buffer(position, Some(data.0), data.1 as u64);
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
+        encoder.set_buffer(position, Some(data.0), data.1);
     }
 }
 
 impl EncoderParam for &BufferOffset<'_> {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
-        encoder.set_buffer(position, Some(data.buffer), data.offset_in_bytes as u64);
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
+        encoder.set_buffer(position, Some(data.buffer), data.offset_in_bytes);
     }
 }
 
 impl EncoderParam for &mut Buffer {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
         encoder.set_buffer(position, Some(data), 0);
     }
 }
 
 impl EncoderParam for (&mut Buffer, usize) {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
-        encoder.set_buffer(position, Some(data.0), data.1 as u64);
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
+        encoder.set_buffer(position, Some(data.0), data.1);
     }
 }
 
 impl EncoderParam for Option<MetalStorage> {
-    fn set_param(encoder: &ComputeCommandEncoderRef, position: u64, data: Self) {
+    fn set_param(encoder: &ComputeCommandEncoder, position: usize, data: Self) {
         if let Some(s) = data {
             encoder.set_buffer(position, Some(s.buffer()), 0);
         }
     }
 }
 
-#[macro_export]
-macro_rules! set_params {
-    ($encoder:ident, ($($param:expr),+)) => (
-        let mut _index = 0;
-        $(
-            $crate::utils::set_param($encoder, _index, $param);
-            _index += 1;
-        )*
-    );
-}
-
-pub trait EncoderProvider {
-    type Encoder<'a>: AsRef<metal::ComputeCommandEncoderRef>
+pub trait EncoderProvider: Sized {
+    type Encoder<'a>: std::ops::Deref<Target = ComputeCommandEncoder>
     where
         Self: 'a;
     fn encoder(&self) -> Self::Encoder<'_>;
 }
 
 pub struct WrappedEncoder<'a> {
-    inner: &'a ComputeCommandEncoderRef,
-    end_encoding_on_drop: bool,
+    pub(crate) inner: ComputeCommandEncoder,
+    #[allow(dead_code)]
+    pub(crate) buffer: &'a Commands,
 }
 
-impl Drop for WrappedEncoder<'_> {
-    fn drop(&mut self) {
-        if self.end_encoding_on_drop {
-            self.inner.end_encoding()
-        }
+impl<'a> std::ops::Deref for WrappedEncoder<'a> {
+    type Target = ComputeCommandEncoder;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
-impl AsRef<metal::ComputeCommandEncoderRef> for WrappedEncoder<'_> {
-    fn as_ref(&self) -> &metal::ComputeCommandEncoderRef {
-        self.inner
+impl std::ops::DerefMut for WrappedEncoder<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
     }
 }
 
-impl EncoderProvider for &metal::CommandBuffer {
+impl EncoderProvider for &Commands {
     type Encoder<'a>
         = WrappedEncoder<'a>
     where
         Self: 'a;
     fn encoder(&self) -> Self::Encoder<'_> {
+        let (_is_new, encoder) = self.command_encoder().expect("Failed to create encoder");
         WrappedEncoder {
-            inner: self.new_compute_command_encoder(),
-            end_encoding_on_drop: true,
-        }
-    }
-}
-
-impl EncoderProvider for &metal::CommandBufferRef {
-    type Encoder<'a>
-        = WrappedEncoder<'a>
-    where
-        Self: 'a;
-    fn encoder(&self) -> Self::Encoder<'_> {
-        WrappedEncoder {
-            inner: self.new_compute_command_encoder(),
-            end_encoding_on_drop: true,
-        }
-    }
-}
-
-impl EncoderProvider for &ComputeCommandEncoderRef {
-    type Encoder<'a>
-        = WrappedEncoder<'a>
-    where
-        Self: 'a;
-    fn encoder(&self) -> Self::Encoder<'_> {
-        WrappedEncoder {
-            inner: self,
-            end_encoding_on_drop: false,
+            inner: encoder,
+            buffer: self,
         }
     }
 }

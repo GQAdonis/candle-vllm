@@ -975,6 +975,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.10.2"
+source = "git+https://github.com/GQAdonis/candle.git#38d152994174135e01aa1410d302b50fa98bac14"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -1014,6 +1015,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.10.2"
+source = "git+https://github.com/GQAdonis/candle.git#38d152994174135e01aa1410d302b50fa98bac14"
 dependencies = [
  "cudaforge",
 ]
@@ -1021,6 +1023,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.10.2"
+source = "git+https://github.com/GQAdonis/candle.git#38d152994174135e01aa1410d302b50fa98bac14"
 dependencies = [
  "half",
  "objc2",
@@ -1034,6 +1037,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.10.2"
+source = "git+https://github.com/GQAdonis/candle.git#38d152994174135e01aa1410d302b50fa98bac14"
 dependencies = [
  "accelerate-src",
  "candle-core 0.10.2",
@@ -1052,6 +1056,7 @@ dependencies = [
 [[package]]
 name = "candle-ug"
 version = "0.10.2"
+source = "git+https://github.com/GQAdonis/candle.git#38d152994174135e01aa1410d302b50fa98bac14"
 dependencies = [
  "ug 0.5.0",
  "ug-cuda",
@@ -1169,7 +1174,11 @@ version = "0.4.5"
 dependencies = [
  "anyhow",
  "candle-core 0.10.2",
- "metal 0.32.0",
+ "candle-metal-kernels",
+ "dispatch2",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
  "once_cell",
  "thiserror 1.0.69",
 ]
@@ -2222,6 +2231,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.10.0",
+ "block2",
+ "libc",
  "objc2",
 ]
 

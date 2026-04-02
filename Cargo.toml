@@ -27,8 +27,9 @@ async-stream = "0.3"
 axum = { version = "0.8.7", features = ["tokio"] }
 chrono = "0.4.41"
 clap = { version = "4.4.7", features = ["derive"] }
-candle-core = { path = "../candle/candle-core", version = "0.10.2" }
-candle-nn = { path = "../candle/candle-nn", version = "0.10.2" }
+candle-core = { git = "https://github.com/GQAdonis/candle.git", version = "0.10.2", features = ["metal"] }
+candle-nn = { git = "https://github.com/GQAdonis/candle.git", version = "0.10.2" }
+candle-metal-kernels = { git = "https://github.com/GQAdonis/candle.git", version = "0.10.2" }
 candle-vllm-kernels = { path = "crates/candle-vllm-kernels" }
 candle-vllm-metal-kernels = { path = "crates/candle-vllm-metal-kernels" }
 derive_more = "0.99.17"
@@ -70,7 +71,9 @@ tqdm = "0.8.0"
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
 accelerate-src = { version = "0.3.2" }
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
-metal = { version = "0.32.0", features = ["mps"] }
+objc2-metal = "0.3.2"
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
 akin = "0.4.0"
 which = "8.0.0"
 ahash = "0.8.11"
@@ -147,5 +150,5 @@ graph = ["candle-vllm-core/graph"]
 
 # `flashattn-rs` depends on guoqingbao/candle; redirect to our GQAdonis/candle workspace fork.
 [patch."https://github.com/guoqingbao/candle.git"]
-candle-core = { path = "../candle/candle-core" }
-candle-nn = { path = "../candle/candle-nn" }
+candle-core = { git = "https://github.com/GQAdonis/candle.git" }
+candle-nn = { git = "https://github.com/GQAdonis/candle.git" }
