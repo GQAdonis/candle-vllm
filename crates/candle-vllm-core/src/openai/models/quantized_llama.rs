@@ -165,7 +165,7 @@ impl GGUFLLaMa {
             rope_theta,
             rope_local_base_freq: None,
             bos_token_id: Some(super::TokenID(Either::Left(Some(128256)))),
-            eos_token_id: super::TokenID(Either::Left(Some(128257))),
+            eos_token_id: Some(super::TokenID(Either::Left(Some(128257)))),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
@@ -182,10 +182,12 @@ impl GGUFLLaMa {
             custom_stop_tokens: Some(vec!["<|end_of_text|>".to_string()]),
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quant: None,
             quantization_config: None,
             moe_config: None,
-            quant: Some("gguf".to_string()),
+            isq_quant: None,
             fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            extra_config_json: None,
         }
     }
 
@@ -195,6 +197,7 @@ impl GGUFLLaMa {
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
+        yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -265,7 +268,7 @@ impl GGUFLLaMa {
         } else {
             None
         };
-        let cfg = GGUFLLaMa::into_config(
+        let mut cfg = GGUFLLaMa::into_config(
             embedding_length,
             head_dim,
             0,
@@ -279,6 +282,7 @@ impl GGUFLLaMa {
             partial_rotary_factor,
             kv_cache_dtype,
         );
+        cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,
             &cfg,

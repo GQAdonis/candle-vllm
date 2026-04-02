@@ -2,7 +2,8 @@
 use crate::openai::distributed::{Comm, Id};
 use crate::openai::sampling_params::Logprobs;
 use crate::openai::TaskData;
-use bincode::{config, Decode, Encode};
+use bincode::config;
+use bincode::serde::{decode_from_slice, encode_to_vec};
 use core::ffi::c_char;
 use interprocess::local_socket::traits::{Listener, Stream};
 use interprocess::local_socket::{GenericNamespaced, Name, ToNsName};
@@ -81,11 +82,11 @@ lazy_static! {
     static ref IS_MASTER_RANK: Mutex<bool> = Mutex::new(false);
 }
 
-#[derive(Serialize, Deserialize, Encode, Decode, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(transparent)]
 pub struct CommID(#[serde(with = "BigArray")] pub [c_char; 128]);
 
-#[derive(Serialize, Deserialize, Encode, Decode, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum RankData {
     Init {
         id: CommID,
@@ -94,13 +95,13 @@ pub enum RankData {
     },
 }
 
-#[derive(Serialize, Deserialize, Encode, Decode, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum TaskSampleData {
     Token(Logprobs),
     StopReason(String),
 }
 
-#[derive(Serialize, Deserialize, Encode, Decode, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum MessageType {
     Start,
     Data(Vec<TaskData>),
@@ -217,8 +218,7 @@ impl DaemonManager {
         streams: &mut Vec<LocalStream>,
         message: &MessageType,
     ) -> std::io::Result<()> {
-        let serialized =
-            bincode::encode_to_vec(message, config::standard()).expect("Serialization failed");
+        let serialized = encode_to_vec(message, config::standard()).expect("Serialization failed");
         for stream in streams.iter_mut() {
             stream.write_all(&(serialized.len() as u32).to_le_bytes())?;
             stream.write_all(&serialized)?;
@@ -240,8 +240,7 @@ impl DaemonManager {
     //intra-node communication
     #[cfg(feature = "mpi")]
     pub fn send_mpi(&self, message: &MessageType) -> std::io::Result<()> {
-        let serialized =
-            bincode::encode_to_vec(message, config::standard()).expect("Serialization failed");
+        let serialized = encode_to_vec(message, config::standard()).expect("Serialization failed");
         let msg_len = serialized.len() as u64;
 
         let world = self.mpi_world.as_ref().unwrap();
@@ -285,8 +284,7 @@ impl DaemonManager {
         let mut serialized = vec![0u8; length];
         stream.read_exact(&mut serialized)?;
         let (message, _): (MessageType, usize) =
-            bincode::decode_from_slice(&serialized, config::standard())
-                .expect("Deserialization failed");
+            decode_from_slice(&serialized, config::standard()).expect("Deserialization failed");
         // Send acknowledgment
         stream.write_all(&[1])?;
         stream.flush()?;
@@ -307,8 +305,7 @@ impl DaemonManager {
         world.broadcast_into(0, &mut serialized[..]);
 
         let (message, _): (MessageType, usize) =
-            bincode::decode_from_slice(&serialized, config::standard())
-                .expect("Deserialization failed");
+            decode_from_slice(&serialized, config::standard()).expect("Deserialization failed");
         Ok(message)
     }
 
@@ -467,7 +464,7 @@ impl DaemonManager {
             let stream = self.main_stream.as_mut().unwrap();
             let message = MessageType::Progress(progress.unwrap());
             let serialized =
-                bincode::encode_to_vec(&message, config::standard()).expect("Serialization failed");
+                encode_to_vec(&message, config::standard()).expect("Serialization failed");
             stream.write_all(&(serialized.len() as u32).to_le_bytes())?;
             stream.write_all(&serialized)?;
             stream.flush()?; // Ensure data is sent immediately

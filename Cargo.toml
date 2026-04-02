@@ -4,6 +4,8 @@ members = [
     "crates/candle-vllm-openai",
     "crates/candle-vllm-responses",
     "crates/candle-vllm-server",
+    "crates/candle-vllm-kernels",
+    "crates/candle-vllm-metal-kernels",
 ]
 exclude = [
     "examples/ai_gateway",
@@ -22,12 +24,13 @@ rust-version = "1.92"
 anyhow = "1.0.75"
 async-trait = "0.1.77"
 async-stream = "0.3"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version = "0.1.7", rev = "753f0a6" }
 axum = { version = "0.8.7", features = ["tokio"] }
 chrono = "0.4.41"
 clap = { version = "4.4.7", features = ["derive"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
+candle-core = { path = "../candle/candle-core", version = "0.10.2" }
+candle-nn = { path = "../candle/candle-nn", version = "0.10.2" }
+candle-vllm-kernels = { path = "crates/candle-vllm-kernels" }
+candle-vllm-metal-kernels = { path = "crates/candle-vllm-metal-kernels" }
 derive_more = "0.99.17"
 dirs = "6.0.0"
 dyn-fmt = "0.4.0"
@@ -43,28 +46,25 @@ lazy_static = "1.4.0"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 mpi = "0.8.1"
-# rmcp = { version = "0.10.0", default-features = false, features = ["client", "server", "macros", "transport-child-process", "transport-streamable-http-client", "transport-sse-client", "transport-io"] }
-# rmcp-macros = "0.10.0"
-# NOTE: rmcp 0.10.0 has missing base64 dependency - this is an upstream issue
 parking_lot = "0.12"
 crossbeam = "0.8"
 rand = "0.9.0"
 rayon = "1.10.0"
-regex = "1.10"
+regex = "1.12.2"
 rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", version = "0.2.2" }
 serde = { version = "1.0.190", features = ["serde_derive"] }
 serde-big-array = "0.5.1"
 serde_json = "1.0.108"
 serde_yaml = "0.9"
 thiserror = "2.0.17"
-tokenizers = "0.22.2"
+tokenizers = "0.21.2"
 tokio = { version = "1.38.0", features = ["sync"] }
 tower-http = { version = "0.6.7", features = ["cors"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 utoipa = { version = "5.4.0", features = ["axum_extras"] }
 uuid = { version = "1.5.0", features = ["v4"] }
-bincode = { version = "2.0.1" }
+bincode = { version = "2.0.1", features = ["serde"] }
 ftail = "0.3.1"
 tqdm = "0.8.0"
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
@@ -76,12 +76,22 @@ which = "8.0.0"
 ahash = "0.8.11"
 indicatif = "0.18.3"
 base64 = "0.22.1"
-reqwest = { version = "0.12.24", features = ["json"] }
+reqwest = { version = "0.12.24", features = ["blocking", "json", "rustls-tls"] }
 schemars = "1.1.0"
 paste = "1.0"
+image = { version = "0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+bytemuck = "1.23.2"
+openai-protocol = "1.2.0"
+tool-parser = "1.1.1"
 
 # Prometheus parking-lot scheduler for resource-constrained pools
 prometheus_parking_lot = { git = "https://github.com/Prometheus-AGS/prometheus-parking-lot-rs.git" }
+
+# TurboQuant KV-cache compression (ICLR 2026, Google Research)
+turboquant = { git = "https://github.com/GQAdonis/turboquant-rs.git", features = ["simd"] }
+
+# FlashAttention-2 paged KV / varlen (same crate stack as guoqingbao/attention.rs); `guoqingbao/candle` is patched below to the workspace fork.
+flashattn-rs = { git = "https://github.com/guoqingbao/flashattn.rs.git", rev = "7b2fbbd509656368e39905272cebf32f4c8d50cf", default-features = false }
 
 [package]
 name = "candle-vllm"
@@ -89,23 +99,53 @@ version = "0.5.1"
 edition = "2021"
 license = "MIT"
 description = "Candle-based vLLM server and libraries"
+default-run = "candle-vllm"
+
+[lib]
+name = "candle_vllm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "candle-vllm"
+path = "src/main.rs"
 
 [dependencies]
 candle-vllm-server = { path = "crates/candle-vllm-server" }
 candle-vllm-core = { path = "crates/candle-vllm-core" }
 candle-vllm-openai = { path = "crates/candle-vllm-openai" }
 candle-vllm-responses = { path = "crates/candle-vllm-responses" }
+candle-core = { workspace = true }
+crossbeam = { workspace = true }
+futures = { workspace = true }
+openai-protocol = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
 rmcp = "0.10.0"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokenizers = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tool-parser = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
 
 [features]
 accelerate = ["candle-vllm-core/accelerate", "candle-vllm-openai/accelerate", "candle-vllm-server/accelerate"]
 cuda = ["candle-vllm-core/cuda", "candle-vllm-openai/cuda", "candle-vllm-server/cuda"]
+cutlass = ["cuda"]
 metal = ["candle-vllm-core/metal", "candle-vllm-openai/metal", "candle-vllm-server/metal"]
 cudnn = ["candle-vllm-core/cudnn"]
 flash-attn = ["candle-vllm-core/flash-attn", "candle-vllm-openai/flash-attn"]
 flash-decoding = ["candle-vllm-core/flash-decoding", "candle-vllm-openai/flash-decoding"]
+flashinfer = ["candle-vllm-core/flashinfer"]
 mkl = ["candle-vllm-core/mkl"]
 nccl = ["candle-vllm-core/nccl", "candle-vllm-openai/nccl", "candle-vllm-server/nccl"]
 mpi = ["candle-vllm-core/mpi", "candle-vllm-openai/mpi", "candle-vllm-server/mpi"]
 graph = ["candle-vllm-core/graph"]
+
+# `flashattn-rs` depends on guoqingbao/candle; redirect to our GQAdonis/candle workspace fork.
+[patch."https://github.com/guoqingbao/candle.git"]
+candle-core = { path = "../candle/candle-core" }
+candle-nn = { path = "../candle/candle-nn" }

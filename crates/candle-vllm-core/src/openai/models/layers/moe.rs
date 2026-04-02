@@ -5,7 +5,7 @@ use crate::openai::distributed::{Comm, VarBuilder};
 use crate::openai::models::linear::linear_no_bias;
 use crate::openai::models::linear::Linear;
 use crate::openai::models::{Config, MoEConfig};
-use attention_rs::moe;
+use crate::attention::moe;
 use candle::{DType, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_core::quantized::GgmlDType;
@@ -100,71 +100,78 @@ impl FusedMoe {
     }
 
     pub fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
-        let (num_tokens, hidden_dim) = xs.dims2()?;
-        let router_logits = self.gate.forward(&xs)?;
-
-        let (mut topk_weights, topk_ids) = attention_rs::topk::topk_softmax(
-            &router_logits.to_dtype(DType::F32)?,
-            self.num_experts_per_tok,
-        )?;
-
-        if self.norm_topk_prob {
-            topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
+        #[cfg(not(feature = "cutlass"))]
+        {
+            let _ = (xs, is_prefill);
+            candle_core::bail!(
+                "FP8 MoE inference requires the `cutlass` feature flag. \
+                 Rebuild with `--features cutlass`."
+            );
         }
 
-        let (expert_ids, sorted_token_ids) = if is_prefill {
-            #[cfg(feature = "cuda")]
-            {
-                use attention_rs::sort::ArgSortOp;
-                topk_ids.flatten_all()?.sort(true)?
+        #[cfg(feature = "cutlass")]
+        {
+            let (num_tokens, hidden_dim) = xs.dims2()?;
+            let router_logits = self.gate.forward(&xs)?;
+
+            let (mut topk_weights, topk_ids) = crate::attention::topk::topk_softmax(
+                &router_logits.to_dtype(DType::F32)?,
+                self.num_experts_per_tok,
+            )?;
+
+            if self.norm_topk_prob {
+                topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
             }
-            #[cfg(not(feature = "cuda"))]
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        } else {
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        };
 
-        //out (M, top_k, N)
-        let gate = moe::moe_gemm(
-            &xs,
-            &self.gate_w,
-            &None,
-            &sorted_token_ids,
-            &expert_ids,
-            self.num_experts_per_tok,
-            is_prefill,
-        )?;
+            let (expert_ids, sorted_token_ids) = if is_prefill {
+                #[cfg(feature = "cuda")]
+                {
+                    use crate::attention::sort::ArgSortOp;
+                    topk_ids.flatten_all()?.sort(true)?
+                }
+                #[cfg(not(feature = "cuda"))]
+                topk_ids.flatten_all()?.sort_last_dim(true)?
+            } else {
+                topk_ids.flatten_all()?.sort_last_dim(true)?
+            };
 
-        let up = moe::moe_gemm(
-            &xs,
-            &self.up_w,
-            &None,
-            &sorted_token_ids,
-            &expert_ids,
-            self.num_experts_per_tok,
-            is_prefill,
-        )?;
+            let gate = moe::moe_gemm(
+                &xs,
+                &self.gate_w,
+                &None,
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                is_prefill,
+            )?;
+            let up = moe::moe_gemm(
+                &xs,
+                &self.up_w,
+                &None,
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                is_prefill,
+            )?;
+            let down_inputs = (up * gate.apply(&self.act)?)?;
 
-        //(M * top_k, N // 2)
-        let down_inputs = (up * gate.apply(&self.act)?)?;
+            let mut ys = moe::moe_gemm(
+                &down_inputs,
+                &self.down_w,
+                &Some(topk_weights),
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                is_prefill,
+            )?
+            .reshape((num_tokens, (), hidden_dim))?
+            .sum(D::Minus2)?;
 
-        //view(M, top_k, K) -> sum -> (M, K)
-        let mut ys = moe::moe_gemm(
-            &down_inputs,
-            &self.down_w,
-            &Some(topk_weights),
-            &sorted_token_ids,
-            &expert_ids,
-            self.num_experts_per_tok,
-            is_prefill,
-        )?
-        .reshape((num_tokens, (), hidden_dim))?
-        .sum(D::Minus2)?;
-
-        if self.world_size > 1 {
-            ys = self.all_reduce.apply(&ys)?;
+            if self.world_size > 1 {
+                ys = self.all_reduce.apply(&ys)?;
+            }
+            Ok(ys)
         }
-        Ok(ys)
     }
 }
 
@@ -360,7 +367,7 @@ impl FusedMoeISQ {
         let router_logits = self.gate.forward(&xs)?;
 
         let (mut topk_weights, topk_ids) =
-            attention_rs::topk::topk_softmax(&router_logits, self.num_experts_per_tok)?;
+            crate::attention::topk::topk_softmax(&router_logits, self.num_experts_per_tok)?;
 
         if self.norm_topk_prob {
             topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
@@ -369,7 +376,7 @@ impl FusedMoeISQ {
         let (expert_ids, sorted_token_ids) = if is_prefill {
             #[cfg(feature = "cuda")]
             {
-                use attention_rs::sort::ArgSortOp;
+                use crate::attention::sort::ArgSortOp;
                 topk_ids.flatten_all()?.sort(true)?
             }
             #[cfg(not(feature = "cuda"))]
@@ -423,6 +430,10 @@ impl FusedMoeISQ {
 }
 
 /// FP8 Mixture of Experts layer with block-wise scales
+#[expect(
+    dead_code,
+    reason = "FP8 MoE support is feature-gated and not instantiated in the current CUDA build profile"
+)]
 pub struct FusedMoeFp8 {
     gate: Linear,
     gate_experts: Tensor,
@@ -613,98 +624,95 @@ impl FusedMoeFp8 {
     }
 
     pub fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
-        let (num_tokens, hidden_dim) = xs.dims2()?;
-        let router_logits = self.gate.forward(&xs)?;
-
-        let (mut topk_weights, topk_ids) = attention_rs::topk::topk_softmax(
-            &router_logits.to_dtype(DType::F32)?,
-            self.num_experts_per_tok,
-        )?;
-
-        if self.norm_topk_prob {
-            topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
-        }
-
-        let (expert_ids, sorted_token_ids) = if is_prefill {
-            #[cfg(feature = "cuda")]
-            {
-                use attention_rs::sort::ArgSortOp;
-                topk_ids.flatten_all()?.sort(true)?
-            }
-            #[cfg(not(feature = "cuda"))]
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        } else {
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        };
-
-        let xs = if xs.dtype() == DType::F32 {
-            xs.to_dtype(DType::BF16)?
-        } else {
-            xs.clone()
-        };
-
-        #[cfg(feature = "cutlass")]
-        let (gate, up) = {
-            let g = moe::moe_gemm_fp8(
-                &xs,
-                &self.gate_experts,
-                &self.gate_experts_scale,
-                &None,
-                &sorted_token_ids,
-                &expert_ids,
-                self.num_experts_per_tok,
-                self.block_size[0],
-                self.block_size[1],
-                is_prefill,
-            )?;
-            let u = moe::moe_gemm_fp8(
-                &xs,
-                &self.up_experts,
-                &self.up_experts_scale,
-                &None,
-                &sorted_token_ids,
-                &expert_ids,
-                self.num_experts_per_tok,
-                self.block_size[0],
-                self.block_size[1],
-                is_prefill,
-            )?;
-            (g, u)
-        };
-
         #[cfg(not(feature = "cutlass"))]
-        let (_gate, _up): (Tensor, Tensor) = {
+        {
+            let _ = (xs, is_prefill);
             candle_core::bail!(
                 "FP8 MoE inference requires the `cutlass` feature flag. \
                  Rebuild with `--features cutlass`."
             );
-        };
-
-        #[cfg(feature = "cutlass")]
-        let down_inputs = (up * gate.apply(&self.act)?)?;
-
-        #[cfg(feature = "cutlass")]
-        let mut ys = moe::moe_gemm_fp8(
-            &down_inputs,
-            &self.down_experts,
-            &self.down_experts_scale,
-            &Some(topk_weights),
-            &sorted_token_ids,
-            &expert_ids,
-            self.num_experts_per_tok,
-            self.block_size[0],
-            self.block_size[1],
-            is_prefill,
-        )?
-        .reshape((num_tokens, (), hidden_dim))?
-        .sum(D::Minus2)?;
-
-        #[cfg(not(feature = "cutlass"))]
-        let mut ys: Tensor = unreachable!();
-
-        if self.world_size > 1 {
-            ys = self.all_reduce.apply(&ys)?;
         }
-        Ok(ys.to_dtype(self.dtype)?)
+
+        #[cfg(feature = "cutlass")]
+        {
+            let (num_tokens, hidden_dim) = xs.dims2()?;
+            let router_logits = self.gate.forward(&xs)?;
+
+            let (mut topk_weights, topk_ids) = crate::attention::topk::topk_softmax(
+                &router_logits.to_dtype(DType::F32)?,
+                self.num_experts_per_tok,
+            )?;
+
+            if self.norm_topk_prob {
+                topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
+            }
+
+            let (expert_ids, sorted_token_ids) = if is_prefill {
+                #[cfg(feature = "cuda")]
+                {
+                    use crate::attention::sort::ArgSortOp;
+                    topk_ids.flatten_all()?.sort(true)?
+                }
+                #[cfg(not(feature = "cuda"))]
+                topk_ids.flatten_all()?.sort_last_dim(true)?
+            } else {
+                topk_ids.flatten_all()?.sort_last_dim(true)?
+            };
+
+            let xs = if xs.dtype() == DType::F32 {
+                xs.to_dtype(DType::BF16)?
+            } else {
+                xs.clone()
+            };
+
+            let (gate, up) = {
+                let g = moe::moe_gemm_fp8(
+                    &xs,
+                    &self.gate_experts,
+                    &self.gate_experts_scale,
+                    &None,
+                    &sorted_token_ids,
+                    &expert_ids,
+                    self.num_experts_per_tok,
+                    self.block_size[0],
+                    self.block_size[1],
+                    is_prefill,
+                )?;
+                let u = moe::moe_gemm_fp8(
+                    &xs,
+                    &self.up_experts,
+                    &self.up_experts_scale,
+                    &None,
+                    &sorted_token_ids,
+                    &expert_ids,
+                    self.num_experts_per_tok,
+                    self.block_size[0],
+                    self.block_size[1],
+                    is_prefill,
+                )?;
+                (g, u)
+            };
+
+            let down_inputs = (up * gate.apply(&self.act)?)?;
+            let mut ys = moe::moe_gemm_fp8(
+                &down_inputs,
+                &self.down_experts,
+                &self.down_experts_scale,
+                &Some(topk_weights),
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                self.block_size[0],
+                self.block_size[1],
+                is_prefill,
+            )?
+            .reshape((num_tokens, (), hidden_dim))?
+            .sum(D::Minus2)?;
+
+            if self.world_size > 1 {
+                ys = self.all_reduce.apply(&ys)?;
+            }
+            Ok(ys.to_dtype(self.dtype)?)
+        }
     }
 }

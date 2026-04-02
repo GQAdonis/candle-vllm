@@ -82,6 +82,40 @@ parking_lot:
 
 models:
   # ============================================================================
+  # Example: Large model with TurboQuant KV-cache compression (6-10x memory reduction)
+  #
+  # kvcache_compression enables the TurboQuant algorithm (ICLR 2026, Google Research)
+  # which stores KV vectors in compressed form and decompresses them lazily before
+  # each PagedAttention forward pass.
+  #
+  # Fields:
+  #   bits   - Bit width per coordinate: 2, 3 (recommended), or 4
+  #   policy - When to apply compression:
+  #     always                               - Always compress
+  #     disabled                             - Never compress (same as omitting the field)
+  #     threshold_tokens: 4096              - Compress once context exceeds N tokens
+  #     memory_pressure:  { free_block_pct: 0.20 }  - Compress when <20% GPU blocks free
+  #
+  # With 3-bit compression a 70B model that previously required >80 GB for a 16K context
+  # can run on a single 80 GB A100.
+  # ============================================================================
+  - name: llama3-70b-turboquant
+    hf_id: meta-llama/Llama-3-70B-Instruct
+    params:
+      dtype: bf16
+      mem: 72000 # KV cache memory in MB
+      max_num_seqs: 8
+      block_size: 16
+      device_ids: [0]
+      temperature: 0.7
+      top_p: 0.9
+      prefill_chunk_size: 8192
+      kvcache_compression:
+        bits: 3
+        policy:
+          threshold_tokens: 4096
+
+  # ============================================================================
   # Example: Mistral 3B Reasoning Model (Safetensors)
   # ============================================================================
   - name: mistral-3-ministral-3B-reasoning

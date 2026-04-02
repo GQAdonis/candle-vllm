@@ -7,8 +7,8 @@
 
 pub use self::pipelines::{LLMEngine, SchedulerPoolConfig};
 use self::responses::APIError;
+use crate::openai::requests::{Tool, ToolChoice};
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
-use bincode::{Decode, Encode};
 use candle_core::Device;
 use either::Either;
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ pub mod image_tool;
 pub mod local_vision_tool;
 pub mod logits_processor;
 pub mod models;
+pub mod multimodal;
 pub mod openai_server;
 pub mod pipelines;
 pub mod requests;
@@ -75,6 +76,39 @@ pub struct PipelineConfig {
     pub max_model_len: usize,
     pub default_max_tokens: usize,
     pub generation_cfg: Option<GenerationConfig>,
+}
+
+impl PipelineConfig {
+    pub fn apply_kv_cache_limit(
+        &mut self,
+        cache_config: &crate::scheduler::cache_engine::CacheConfig,
+    ) {
+        self.max_model_len = resolve_final_max_model_len(self.max_model_len, cache_config);
+        self.default_max_tokens = self.default_max_tokens.min(self.max_model_len);
+    }
+}
+
+pub fn kv_cache_capacity_tokens(
+    cache_config: &crate::scheduler::cache_engine::CacheConfig,
+) -> usize {
+    cache_config
+        .num_gpu_blocks
+        .map(|blocks| blocks.saturating_mul(cache_config.block_size))
+        .unwrap_or(0)
+}
+
+pub fn resolve_final_max_model_len(
+    model_max_len: usize,
+    cache_config: &crate::scheduler::cache_engine::CacheConfig,
+) -> usize {
+    let kv_cache_capacity = kv_cache_capacity_tokens(cache_config);
+    let kv_cache_capacity = if kv_cache_capacity == 0 {
+        model_max_len
+    } else {
+        kv_cache_capacity
+    };
+
+    model_max_len.min(kv_cache_capacity)
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -126,7 +160,7 @@ pub struct OpenAIServerData {
     pub vision_tool: Option<Arc<crate::openai::local_vision_tool::LocalVisionModelTool>>,
 }
 
-#[derive(Serialize, Deserialize, Encode, Decode, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TaskData {
     pub seq_id: usize,
     pub group_id: usize,
@@ -138,4 +172,69 @@ pub struct TaskData {
     pub is_embedding: bool,
     pub encoding_format: requests::EncodingFormat,
     pub embedding_type: requests::EmbeddingType,
+    pub tools: Vec<Tool>,
+    pub images: Option<multimodal::ImageData>,
+    pub include_usage: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolChoiceKind {
+    Auto,
+    None,
+    Function(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedToolConfig {
+    pub tools: Vec<Tool>,
+    pub choice: ToolChoiceKind,
+}
+
+fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {
+    match choice {
+        None => ToolChoiceKind::Auto,
+        Some(ToolChoice::Specific(specific)) => {
+            ToolChoiceKind::Function(specific.function.name.clone())
+        }
+        Some(ToolChoice::Mode(mode)) if mode == "none" => ToolChoiceKind::None,
+        Some(ToolChoice::Mode(_)) => ToolChoiceKind::Auto,
+    }
+}
+
+pub fn resolve_tools_for_request(
+    request_tools: &Option<Vec<Tool>>,
+    tool_choice: &Option<ToolChoice>,
+    mcp_tools: Option<&[Tool]>,
+) -> Result<ResolvedToolConfig, APIError> {
+    let choice = normalize_tool_choice(tool_choice);
+    let mut tools = if let Some(requested) = request_tools {
+        requested.clone()
+    } else if let Some(mcp_tools) = mcp_tools {
+        mcp_tools.to_vec()
+    } else {
+        Vec::new()
+    };
+
+    if matches!(choice, ToolChoiceKind::None) {
+        tools.clear();
+        return Ok(ResolvedToolConfig { tools, choice });
+    }
+
+    if let ToolChoiceKind::Function(name) = &choice {
+        if tools.is_empty() {
+            return Err(APIError::new(format!(
+                "tool_choice '{}' requires tools to be provided.",
+                name
+            )));
+        }
+        tools.retain(|tool| tool.function.name == *name);
+        if tools.is_empty() {
+            return Err(APIError::new(format!(
+                "tool_choice '{}' not found in tools.",
+                name
+            )));
+        }
+    }
+
+    Ok(ResolvedToolConfig { tools, choice })
 }

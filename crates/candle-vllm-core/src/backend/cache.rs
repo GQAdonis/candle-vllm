@@ -1,5 +1,5 @@
 #[cfg(feature = "cuda")]
-use attention_rs::kernels::ffi::{copy_blocks_bf16, copy_blocks_f16, copy_blocks_f32};
+use crate::attention::kernels::ffi::{copy_blocks_bf16, copy_blocks_f16, copy_blocks_f32};
 #[cfg(feature = "metal")]
 use candle_core::{
     backend::BackendStorage, CpuStorage, Device, IndexOp, Layout, MetalDevice, MetalStorage,
@@ -11,6 +11,8 @@ use candle_core::{
     cuda_backend::CudaStorageSlice,
     Device, IndexOp, Result, Storage, Tensor,
 };
+#[cfg(feature = "cuda")]
+use std::ops::Deref;
 #[cfg(any(feature = "cuda", feature = "metal"))]
 use std::{collections::HashMap, iter::zip};
 
@@ -52,6 +54,8 @@ pub unsafe fn copy_blocks(
     let mut value_cache_ptrs = Vec::new();
     value_cache_ptrs.reserve_exact(num_layers as usize);
     let mut dtype = DType::F32;
+    let stream = dev.cuda_stream();
+    let stream_ref: &candle_core::cuda_backend::cudarc::driver::CudaStream = stream.deref();
 
     for (key_cache, value_cache) in zip(&key_caches, &value_caches) {
         key_cache.to_device(cache_dev)?;
@@ -67,8 +71,6 @@ pub unsafe fn copy_blocks(
             unreachable!()
         };
 
-        // let key_ptr = *try_api!(key_storage.as_cuda_slice::<u8>()).device_ptr();
-
         let value_offset: u64 = value_cache
             .storage_and_layout()
             .1
@@ -78,23 +80,22 @@ pub unsafe fn copy_blocks(
         let Storage::Cuda(value_storage) = &*value_cache.storage_and_layout().0 else {
             unreachable!()
         };
-        // let value_ptr = *try_api!(value_storage.as_cuda_slice::<u8>()).device_ptr();
         let (key_ptr, value_ptr) = match (&key_storage.slice, &value_storage.slice) {
             (CudaStorageSlice::BF16(slice_key), CudaStorageSlice::BF16(slice_value)) => {
-                let ptr_key = *slice_key.slice(0..).device_ptr();
-                let ptr_value = *slice_value.slice(0..).device_ptr();
+                let (ptr_key, _kg) = slice_key.slice(0..).device_ptr(stream_ref);
+                let (ptr_value, _vg) = slice_value.slice(0..).device_ptr(stream_ref);
                 dtype = DType::BF16;
                 (ptr_key, ptr_value)
             }
             (CudaStorageSlice::F16(slice_key), CudaStorageSlice::F16(slice_value)) => {
-                let ptr_key = *slice_key.slice(0..).device_ptr();
-                let ptr_value = *slice_value.slice(0..).device_ptr();
+                let (ptr_key, _kg) = slice_key.slice(0..).device_ptr(stream_ref);
+                let (ptr_value, _vg) = slice_value.slice(0..).device_ptr(stream_ref);
                 dtype = DType::F16;
                 (ptr_key, ptr_value)
             }
             (CudaStorageSlice::F32(slice_key), CudaStorageSlice::F32(slice_value)) => {
-                let ptr_key = *slice_key.slice(0..).device_ptr();
-                let ptr_value = *slice_value.slice(0..).device_ptr();
+                let (ptr_key, _kg) = slice_key.slice(0..).device_ptr(stream_ref);
+                let (ptr_value, _vg) = slice_value.slice(0..).device_ptr(stream_ref);
                 (ptr_key, ptr_value)
             }
             _ => {
@@ -138,7 +139,7 @@ pub unsafe fn copy_blocks(
                 num_layers as i32,
                 num_pairs as i32,
                 numel_per_block as i32,
-                *dev.cu_stream() as i64,
+                dev.cu_stream() as i64,
             );
         },
         DType::F16 => unsafe {
@@ -149,7 +150,7 @@ pub unsafe fn copy_blocks(
                 num_layers as i32,
                 num_pairs as i32,
                 numel_per_block as i32,
-                *dev.cu_stream() as i64,
+                dev.cu_stream() as i64,
             );
         },
         DType::F32 => unsafe {
@@ -160,7 +161,7 @@ pub unsafe fn copy_blocks(
                 num_layers as i32,
                 num_pairs as i32,
                 numel_per_block as i32,
-                *dev.cu_stream() as i64,
+                dev.cu_stream() as i64,
             );
         },
         _ => {}
@@ -191,28 +192,30 @@ pub fn swap_blocks(
             let Storage::Cuda(dst_storage) = &*dst_storage else {
                 unreachable!()
             };
+            let src_stream = src_dev.cuda_stream();
+            let dst_stream = dst_dev.cuda_stream();
+            let src_stream_ref = src_stream.deref();
+            let dst_stream_ref = dst_stream.deref();
             let (src_ptr, dst_ptr) = match (&src_storage.slice, &dst_storage.slice) {
                 (CudaStorageSlice::BF16(slice_src), CudaStorageSlice::BF16(slice_dst)) => {
-                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
-                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
+                    let (ptr_src, _sg) = slice_src.slice(src_layout.start_offset()..).device_ptr(src_stream_ref);
+                    let (ptr_dst, _dg) = slice_dst.slice(dst_layout.start_offset()..).device_ptr(dst_stream_ref);
                     (ptr_src, ptr_dst)
                 }
                 (CudaStorageSlice::F16(slice_src), CudaStorageSlice::F16(slice_dst)) => {
-                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
-                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
+                    let (ptr_src, _sg) = slice_src.slice(src_layout.start_offset()..).device_ptr(src_stream_ref);
+                    let (ptr_dst, _dg) = slice_dst.slice(dst_layout.start_offset()..).device_ptr(dst_stream_ref);
                     (ptr_src, ptr_dst)
                 }
                 (CudaStorageSlice::F32(slice_src), CudaStorageSlice::F32(slice_dst)) => {
-                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
-                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
+                    let (ptr_src, _sg) = slice_src.slice(src_layout.start_offset()..).device_ptr(src_stream_ref);
+                    let (ptr_dst, _dg) = slice_dst.slice(dst_layout.start_offset()..).device_ptr(dst_stream_ref);
                     (ptr_src, ptr_dst)
                 }
                 _ => {
                     candle_core::bail!("only f32, f16 and bf16 input data type supported!");
                 }
             };
-            // let src_ptr = src_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(src_layout.start_offset()).unwrap();
-            // let dst_ptr = dst_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
 
             for (src_block_number, dst_block_number) in block_mapping {
                 let src_offset: u64 = (src_block_number * block_size_in_bytes).try_into().unwrap();
@@ -221,7 +224,7 @@ pub fn swap_blocks(
                 let src_slice: CudaSlice<u8> = unsafe {
                     src_dev.upgrade_device_ptr(src_ptr + src_offset, block_size_in_bytes)
                 };
-                let mut dst_slice = unsafe {
+                let mut dst_slice: CudaSlice<u8> = unsafe {
                     dst_dev.upgrade_device_ptr(dst_ptr + dst_offset, block_size_in_bytes)
                 };
 
@@ -241,7 +244,9 @@ pub fn swap_blocks(
             let Storage::Cuda(dst_storage) = &*dst_storage else {
                 unreachable!()
             };
-            let dst_ptr = dst_storage.as_cuda_slice::<u8>()?.device_ptr()
+            let dst_stream = dst_dev.cuda_stream();
+            let (dst_base_ptr, _dg) = dst_storage.as_cuda_slice::<u8>()?.device_ptr(dst_stream.deref());
+            let dst_base_ptr = dst_base_ptr
                 + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
             let src_slice = src_storage.as_slice()?;
 
@@ -250,7 +255,7 @@ pub fn swap_blocks(
                 let dst_offset: u64 = (dst_block_number * block_size_in_bytes).try_into().unwrap();
                 // u8s because we copy by bytes
                 let mut dst_slice: CudaSlice<u8> = unsafe {
-                    dst_dev.upgrade_device_ptr(dst_ptr + dst_offset, block_size_in_bytes)
+                    dst_dev.upgrade_device_ptr(dst_base_ptr + dst_offset, block_size_in_bytes)
                 };
 
                 dst_dev
@@ -333,10 +338,10 @@ pub fn copy_blocks(
         let command_buffer = dev.command_buffer()?;
         command_buffer.set_label("copy-blocks");
 
-        attention_rs::metal_kernels::call_copy_blocks(
+        crate::attention::metal_kernels::call_copy_blocks(
             dev.device(),
             &command_buffer,
-            attention_rs::metal_kernels::Kernels::default(),
+            crate::attention::metal_kernels::Kernels::default(),
             key_cache.dtype(),
             key_storage.buffer(),
             key_offset * key_storage.dtype().size_in_bytes(),

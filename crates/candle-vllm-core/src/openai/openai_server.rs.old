@@ -1,12 +1,21 @@
-use super::requests::{ChatCompletionRequest, Messages, ToolCall};
-use super::responses::{APIError, ChatChoiceData, ChatCompletionResponse, ChatResponder};
+use super::conversation::RenderedPromptRepairer;
+use super::requests::Messages;
+use super::requests::{
+    normalize_empty_openai_tool_results, ChatCompletionRequest, EmbeddingRequest, EmbeddingType,
+    EncodingFormat,
+};
+use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
-use super::streaming::{Streamer, StreamingStatus};
-use super::tool_parser::{get_tool_parser, ParsedOutput};
+use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
-use axum::extract::State;
+use crate::openai::multimodal::{build_messages_and_images, ImageData};
+use crate::openai::{resolve_tools_for_request, ResolvedToolConfig};
+use crate::tools::ToolFormat;
 use axum::response::sse::KeepAlive;
-use axum::{response::Sse, Json};
+use axum::{
+    extract::{Json, State},
+    response::Sse,
+};
 use flume;
 use std::env;
 use std::sync::Arc;
@@ -15,167 +24,107 @@ use tokio::sync::Notify;
 use tokio::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
-#[utoipa::path(
-    post,
-    tag = "candle-vllm",
-    path = "/v1/chat/completions",
-    request_body = ChatCompletionRequest,
-    responses((status = 200, description = "Chat completions"))
-)]
-pub async fn chat_completions(
-    State(data): State<Arc<OpenAIServerData>>,
-    request: Json<ChatCompletionRequest>,
-) -> ChatResponder {
-    chat_completions_with_data(data, request.0).await
+
+fn current_model_name(data: &OpenAIServerData) -> Result<String, APIError> {
+    let model = data.model.read();
+    let (pipeline, _) = model
+        .get_pipeline(0)
+        .ok_or(APIError::new("Missing pipeline".to_string()))?;
+    Ok(pipeline.name().to_string())
 }
 
-// Process images in multimodal content
-async fn process_multimodal_content(
-    data: &OpenAIServerData,
-    content: &crate::openai::requests::MessageContent,
-) -> Result<String, APIError> {
-    use crate::openai::image_tool::ImageDescriptionTool;
-    use crate::openai::requests::{ContentPart, MessageContent};
-
-    match content {
-        MessageContent::Text(text) => Ok(text.clone()),
-        MessageContent::Parts(parts) => {
-            let mut processed_content = String::new();
-
-            for part in parts {
-                match part {
-                    ContentPart::Text { text } => {
-                        processed_content.push_str(text);
-                        processed_content.push('\n');
-                    }
-                    ContentPart::ImageUrl { image_url } => {
-                        if let Some(ref vision_tool) = data.vision_tool {
-                            // Process the image through vision tool
-                            let description = vision_tool
-                                .describe_image(image_url, None)
-                                .await
-                                .map_err(|e| {
-                                    APIError::new(format!("Vision processing failed: {}", e))
-                                })?;
-
-                            processed_content
-                                .push_str(&format!("[Image: {}]", description.description));
-                            processed_content.push('\n');
-                        } else {
-                            // No vision tool available, add placeholder
-                            processed_content.push_str("[Image: vision processing not available]");
-                            processed_content.push('\n');
-                        }
-                    }
-                }
-            }
-
-            Ok(processed_content)
-        }
+fn resolve_response_model_name(requested: Option<&str>, current: &str) -> String {
+    match requested.map(str::trim) {
+        None | Some("") | Some("default") => current.to_string(),
+        Some(name) => name.to_string(),
     }
 }
 
-// Get prompt, roles - now with tool support and vision processing
+// Get prompt, roles
 async fn get_gen_prompt(
     data: &OpenAIServerData,
     request: &ChatCompletionRequest,
-) -> Result<String, APIError> {
-    let model = data.model.write();
+    tool_config: &ResolvedToolConfig,
+) -> Result<(String, Option<ImageData>), APIError> {
+    let mut model = data.model.write();
     let pipeline = model
         .get_mut_pipeline(0)
         .ok_or(APIError::new("Missing pipeline".to_string()))?;
-    let conversation = pipeline.0.get_conversation(data.record_conversation);
-
-    // Set tools if provided
-    if let Some(ref tools) = request.tools {
-        conversation.set_tools(Some(tools.clone()));
-    } else {
-        conversation.set_tools(None);
-    }
+    let mut conversation = pipeline.0.get_conversation().clone();
+    let mut image_data = None;
 
     match &request.messages {
         Messages::Literal(msg) => {
-            return Ok(msg.clone());
+            conversation.append_message("user".to_string(), msg.clone());
         }
         Messages::Chat(messages) => {
-            // New Chat format with full tool support and vision processing
-            for message in messages {
-                if message.role == "system" {
-                    if let Some(ref content) = message.content {
-                        let content_str = process_multimodal_content(data, content).await?;
-                        tracing::info!("system prompt found: {}", content_str);
-                        conversation.set_system_message(Some(content_str));
-                    }
+            let (render_messages, images) =
+                build_messages_and_images(messages, pipeline.0.image_config.as_ref())
+                    .map_err(APIError::from)?;
+            image_data = images;
+            for message in render_messages {
+                let role = message.role.as_str();
+                if role == "system" {
+                    conversation.set_system_message(Some(message.content.clone()));
+                    continue;
                 }
-
-                let processed_content = if let Some(ref content) = message.content {
-                    Some(process_multimodal_content(data, content).await?)
-                } else {
-                    None
-                };
-
-                conversation.append_message_ext(
-                    message.role.clone(),
-                    processed_content,
-                    message.tool_calls.clone(),
-                    message.tool_call_id.clone(),
-                    message.name.clone(),
-                );
+                conversation.append_template_message(message);
             }
         }
         Messages::Map(messages) => {
-            // Legacy format - convert to simple messages
             for message in messages {
                 let role = message
                     .get("role")
                     .ok_or(APIError::new("Message key `role` not found.".to_string()))?;
-                let content = message.get("content").cloned().unwrap_or_default();
+                let content = message
+                    .get("content")
+                    .ok_or(APIError::new(
+                        "Message key `content` not found.".to_string(),
+                    ))?
+                    .clone();
 
                 if role == "system" {
-                    tracing::info!("system prompt found: {}", content);
                     conversation.set_system_message(Some(content.clone()));
+                } else {
+                    conversation.append_message(role.to_string(), content)
                 }
-                conversation.append_message(role.to_string(), content)
             }
         }
     }
 
-    Ok(conversation.get_prompt(request.thinking.unwrap_or(false)))
-}
+    if !tool_config.tools.is_empty() {
+        let mut tools_prompt = ToolFormat::get_tool_prompt(&pipeline.0.tool_config);
 
-/// Parse the model output for tool calls
-#[allow(dead_code)]
-fn parse_tool_calls(output: &str, model_name: &str) -> ParsedOutput {
-    let parser = get_tool_parser(model_name);
-    parser.parse(output)
-}
-
-/// Build a ChatChoiceData from parsed output
-#[allow(dead_code)]
-fn build_choice_data(parsed: ParsedOutput) -> ChatChoiceData {
-    match parsed {
-        ParsedOutput::Text(text) => ChatChoiceData::text(text),
-        ParsedOutput::ToolCalls(tool_calls) => {
-            let api_calls: Vec<ToolCall> =
-                tool_calls.into_iter().map(|tc| tc.to_tool_call()).collect();
-            ChatChoiceData::with_tool_calls(api_calls)
+        // Enforce tool_choice=function by prepending a mandatory instruction
+        if let crate::openai::ToolChoiceKind::Function(name) = &tool_config.choice {
+            tools_prompt = format!(
+                "IMPORTANT: You MUST call the tool \"{}\". Do not respond with plain text.\n\n{}",
+                name, tools_prompt
+            );
         }
-        ParsedOutput::Mixed { text, tool_calls } => {
-            let api_calls: Vec<ToolCall> =
-                tool_calls.into_iter().map(|tc| tc.to_tool_call()).collect();
-            ChatChoiceData::with_content_and_tool_calls(text, api_calls)
+
+        let current_system = conversation.get_system_message().unwrap_or_default();
+        let new_system = if current_system.is_empty() {
+            tools_prompt
+        } else {
+            format!("{}\n\n{}", current_system, tools_prompt)
+        };
+        conversation.set_system_message(Some(new_system));
+    }
+
+    let enable_thinking = request.thinking.unwrap_or(false);
+    let mut prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
+
+    if model.scheduler.prefix_cache_enabled() {
+        if let Some(repaired) =
+            RenderedPromptRepairer::from_conversation(&conversation, enable_thinking)
+                .and_then(|r| r.repair(&prompt))
+        {
+            prompt = repaired;
         }
     }
-}
 
-/// Determine the finish reason based on output
-#[allow(dead_code)]
-fn determine_finish_reason(choice_data: &ChatChoiceData, original_reason: Option<&str>) -> String {
-    if choice_data.has_tool_calls() {
-        "tool_calls".to_string()
-    } else {
-        original_reason.unwrap_or("stop").to_string()
-    }
+    Ok((prompt, image_data))
 }
 
 async fn check_length(
@@ -193,7 +142,7 @@ async fn check_length(
             pipeline
                 .0
                 .tokenizer()
-                .encode_fast(prompt, false)
+                .encode_fast(prompt, true)
                 .map_err(APIError::from)?
                 .get_ids()
                 .to_vec(),
@@ -231,10 +180,22 @@ async fn check_length(
     }
 }
 
-pub async fn chat_completions_with_data(
-    data: Arc<OpenAIServerData>,
-    request: ChatCompletionRequest,
+#[utoipa::path(
+    post,
+    tag = "candle-vllm",
+    path = "/v1/chat/completions",
+    request_body = ChatCompletionRequest,
+    responses((status = 200, description = "Chat completions"))
+)]
+pub async fn chat_completions(
+    State(data): State<Arc<OpenAIServerData>>,
+    request: Json<ChatCompletionRequest>,
 ) -> ChatResponder {
+    let mut request = request.0;
+    if let Messages::Chat(messages) = &mut request.messages {
+        normalize_empty_openai_tool_results(messages);
+    }
+
     #[cfg(feature = "nccl")]
     use crate::openai::communicator::DaemonManager;
     #[cfg(feature = "nccl")]
@@ -252,7 +213,16 @@ pub async fn chat_completions_with_data(
         ));
     }
 
-    let prompt = match get_gen_prompt(&data, &request).await {
+    let tool_config = match resolve_tools_for_request(
+        &request.tools,
+        &request.tool_choice,
+        data.mcp_manager.as_ref(),
+    ) {
+        Ok(config) => config,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
+
+    let (prompt, image_data) = match get_gen_prompt(&data, &request, &tool_config).await {
         Ok(p) => p,
         Err(e) => return ChatResponder::ValidationError(e),
     };
@@ -266,15 +236,6 @@ pub async fn chat_completions_with_data(
     debug!("\n\n\nPrompt {:?}", prompt);
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
-
-    // Store conversation_id and resource_id for this request
-    {
-        let model = data.model.write();
-        model.request_metadata.write().insert(
-            request_id.clone(),
-            (request.conversation_id.clone(), request.resource_id.clone()),
-        );
-    }
 
     let mut max_request_tokens = request
         .max_tokens
@@ -303,7 +264,7 @@ pub async fn chat_completions_with_data(
     }
 
     let generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();
-    let sampling_params = match SamplingParams::new(
+    let mut sampling_params = match SamplingParams::new(
         request.n.unwrap_or(1),
         request.best_of,
         request
@@ -332,6 +293,8 @@ pub async fn chat_completions_with_data(
         Ok(params) => params,
         Err(e) => return ChatResponder::ValidationError(e),
     };
+    let has_tools = !tool_config.tools.is_empty();
+    sampling_params.mcp_mode = if has_tools { Some(true) } else { None };
 
     let (response_tx, rx) = flume::unbounded();
     tracing::info!("{:?}", sampling_params);
@@ -339,7 +302,14 @@ pub async fn chat_completions_with_data(
     let data_clone = data.clone();
     let request_id_clone = request_id.clone();
     let stream_request = request.stream.is_some_and(|x| x);
-    let model_name = request.model.clone();
+    let include_usage = request
+        .stream_options
+        .as_ref()
+        .is_some_and(|options| options.include_usage);
+    let model_name = match current_model_name(&data) {
+        Ok(current) => resolve_response_model_name(request.model.as_deref(), &current),
+        Err(e) => return ChatResponder::ModelError(e),
+    };
     let sync_notify = Arc::new(Notify::new());
     let sync_completion_notify = if stream_request {
         None
@@ -351,39 +321,26 @@ pub async fn chat_completions_with_data(
         tokio::runtime::Handle::current().block_on(async move {
             {
                 //send completion request to inference engine
-                let model = data.model.write();
-                let tokens: Vec<u32> = token_ids;
-                let positions: Vec<usize> = (0..tokens.len()).collect();
-
-                let metadata = crate::scheduler::sequence::SequenceGroupMetadata { seq_groups };
-
-                let response_rx = model
-                    .add_request(request_id.clone(), tokens, positions, metadata)
-                    .map_err(|e| ChatResponder::InternalError(e.to_string()))?;
-
-                // Bridge the engine's response channel into the existing flume-based
-                // streaming path by forwarding the single completion.
-                std::thread::spawn(move || match response_rx.recv() {
-                    Ok(Ok((choices, usage))) => {
-                        let response = ChatCompletionResponse {
-                            id: request_id.clone(),
-                            object: "chat.completion".to_string(),
-                            created: usage.created,
-                            model: model_name.to_string(),
-                            choices,
-                            usage: Some(usage),
-                            conversation_id: None,
-                            resource_id: None,
-                        };
-                        let _ = response_tx.send(Ok(response));
-                    }
-                    Ok(Err(err)) => {
-                        let _ = response_tx.send(Err(err));
-                    }
-                    Err(e) => {
-                        let _ = response_tx.send(Err(e.to_string()));
-                    }
-                });
+                let mut model = data.model.write();
+                model.add_request(
+                    token_ids,
+                    request_id.clone(),
+                    SystemTime::now(),
+                    sampling_params,
+                    request.logprobs.unwrap_or(false),
+                    false,
+                    EncodingFormat::default(),
+                    EmbeddingType::default(),
+                    tool_config.tools.clone(),
+                    image_data,
+                    if stream_request {
+                        Some(Arc::new(response_tx))
+                    } else {
+                        None
+                    },
+                    sync_completion_notify,
+                    include_usage,
+                );
                 model.notify.notify_one();
             }
         });
@@ -409,33 +366,158 @@ pub async fn chat_completions_with_data(
         // wait until current response finished
         tracing::warn!("waiting response for sync request {}", request_id_clone);
         sync_notify.as_ref().notified().await;
-        let model = data_clone.model.read();
-        if !model.completion_records.contains_key(&request_id_clone) {
-            return ChatResponder::ModelError(APIError::from(format!(
-                "Unable to generate response for request {request_id_clone}"
-            )));
+        // Re-acquire read lock to get the response
+        // Note: we need to drop the lock later
+        let (choices, usage) = {
+            let model = data_clone.model.read();
+            if !model.completion_records.contains_key(&request_id_clone) {
+                return ChatResponder::ModelError(APIError::from(format!(
+                    "Unable to generate response for request {request_id_clone}"
+                )));
+            }
+            let record = &model.completion_records[&request_id_clone];
+            (record.0.clone(), record.1.clone())
+        };
+
+        // Check for tool calls in the output
+        let mut final_choices = choices.clone();
+        if has_tools {
+            let parser = crate::tools::parser::ToolParser::new();
+            for choice in &mut final_choices {
+                if choice.message.tool_calls.is_some() {
+                    continue;
+                }
+                if let Some(content) = &choice.message.content {
+                    let calls = parser.parse(content);
+                    if !calls.is_empty() {
+                        choice.message.tool_calls = Some(calls);
+                        choice.message.content = None;
+                        choice.finish_reason = Some("tool_calls".to_string());
+                    }
+                }
+            }
         }
-
-        let choices = &model.completion_records[&request_id_clone].0;
-        let usage = &model.completion_records[&request_id_clone].1;
-
-        // Retrieve conversation_id and resource_id from metadata
-        let (conversation_id, resource_id) = model
-            .request_metadata
-            .read()
-            .get(&request_id_clone)
-            .cloned()
-            .unwrap_or((None, None));
 
         ChatResponder::Completion(ChatCompletionResponse {
             id: request_id_clone,
-            choices: choices.to_vec(),
+            choices: final_choices,
             created: usage.created,
             model: model_name,
             object: "chat.completion",
-            usage: usage.clone(),
-            conversation_id,
-            resource_id,
+            usage: usage,
         })
+    }
+}
+
+#[utoipa::path(
+    post,
+    tag = "candle-vllm",
+    path = "/v1/embeddings",
+    request_body = EmbeddingRequest,
+    responses((status = 200, description = "Embeddings"))
+)]
+pub async fn create_embeddings(
+    State(data): State<Arc<OpenAIServerData>>,
+    request: Json<EmbeddingRequest>,
+) -> ChatResponder {
+    let input = request.input.clone();
+    let prompts = input.into_vec();
+
+    //For now only support single prompt for simplicity, loop if multiple
+    if prompts.len() != 1 {
+        return ChatResponder::ValidationError(APIError::new_str(
+            "Currently only support single string or token array input.",
+        ));
+    }
+
+    let prompt_str = prompts[0].clone();
+
+    //TODO: Reuse check_length or similar logic. For now simplified.
+    let (token_ids, available_tokens) = {
+        let model = data.model.read();
+        let available_kv_tokens = model.get_available_kv_tokens();
+        let pipeline = model
+            .get_pipeline(0)
+            .ok_or(APIError::new("Missing pipeline".to_string()));
+
+        match pipeline {
+            Ok(pipeline) => match pipeline.0.tokenizer().encode_fast(prompt_str, true) {
+                Ok(encoding) => (encoding.get_ids().to_vec(), available_kv_tokens),
+                Err(e) => return ChatResponder::ValidationError(APIError::from(e)),
+            },
+            Err(e) => return ChatResponder::ModelError(e),
+        }
+    };
+
+    if token_ids.len() >= available_tokens {
+        return ChatResponder::ValidationError(APIError::new_str("Prompt too long."));
+    }
+
+    let request_id = format!("embd-{}", Uuid::new_v4());
+
+    // Create sampling params for embedding (max_tokens=0, etc)
+    // We reuse SamplingParams but most fields irrelevant.
+    let _generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();
+    let sampling_params = match SamplingParams::new(
+        1,
+        None,
+        0.0,
+        0.0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        1.0,
+        EarlyStoppingCondition::UnlikelyBetterCandidates,
+        None,
+        Vec::new(),
+        false,
+        1,
+        None,
+        None,
+        true,
+        None,
+    ) {
+        Ok(params) => params,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
+
+    let (response_tx, rx) = flume::unbounded();
+
+    let request_id_clone = request_id.clone();
+
+    let _ = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            {
+                let mut model = data.model.write();
+                model.add_request(
+                    token_ids,
+                    request_id_clone,
+                    SystemTime::now(),
+                    sampling_params,
+                    false,
+                    true, //is_embedding
+                    request.encoding_format.clone(),
+                    request.embedding_type.clone(),
+                    Vec::new(),
+                    None,
+                    Some(Arc::new(response_tx)),
+                    None,
+                    false,
+                );
+                model.notify.notify_one();
+            }
+        });
+    });
+
+    // Wait for response from channel
+    // Embedding is strictly one response.
+    match rx.recv_async().await {
+        Ok(ChatResponse::Embedding(resp)) => ChatResponder::Embedding(resp),
+        Ok(ChatResponse::ModelError(e)) => ChatResponder::ModelError(APIError::new_str(&e)),
+        Ok(_) => ChatResponder::InternalError(APIError::new(format!("Unexpected response type"))),
+        Err(_) => ChatResponder::InternalError(APIError::new("Channel closed".to_string())),
     }
 }

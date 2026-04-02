@@ -5,6 +5,7 @@ use candle_core as candle;
 use std::path::Path;
 use tracing::warn;
 pub mod api;
+pub mod attention;
 pub mod backend;
 pub mod config;
 pub mod engine_builder_ext;
@@ -18,7 +19,10 @@ pub mod prompt_cache;
 pub mod scheduler;
 pub mod tools;
 pub mod vision;
-pub use attention_rs::{InputMetadata, PagedAttention};
+pub use attention::{InputMetadata, PagedAttention};
+
+pub const MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV: &str = "VLLM_RS_MAMBA_SNAPSHOT_STRIDE_BLOCKS";
+pub const DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE: usize = 8;
 
 // Re-export public API types
 pub use api::{
@@ -81,5 +85,29 @@ pub fn new_device(ordinal: usize) -> CandleResult<Device> {
             warn!("Running on CPU, to run on GPU, build this example with `--features cuda`");
         }
         Ok(Device::Cpu)
+    }
+}
+
+pub fn mamba_snapshot_block_stride_blocks() -> usize {
+    let default = DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE;
+    let Ok(raw) = std::env::var(MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV) else {
+        return default;
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(0) => {
+            warn!(
+                "{} must be >= 1, got 0. Falling back to default {}.",
+                MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV, default
+            );
+            default
+        }
+        Ok(v) => v,
+        Err(_) => {
+            warn!(
+                "Invalid {}='{}'. Falling back to default {}.",
+                MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV, raw, default
+            );
+            default
+        }
     }
 }

@@ -207,11 +207,25 @@ impl InferenceWorker {
         // Step 1: GPU inference forward pass
         // Note: We use the cache_engine's kv_cache but the full autoregressive
         // generation loop needs to be integrated with the scheduler
+        let kv_tensors = match self.cache_engine.get_kv_tensors() {
+            Ok(t) => t,
+            Err(e) => {
+                error!(
+                    rank = self.rank,
+                    request_id = %work.request_id,
+                    error = %e,
+                    "Failed to prepare KV tensors"
+                );
+                let _ = work.response_tx.send(Err(e.to_string()));
+                return;
+            }
+        };
         let forward_result = self.pipeline.forward(
             tokens_tensor,
             &positions_tensor,
-            Some(&self.cache_engine.get_kv_cache()),
+            Some(&kv_tensors),
             &work.input_metadata,
+            None,
         );
 
         match forward_result {
@@ -347,6 +361,8 @@ impl InferenceWorker {
 
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true, // Always use prefill/chunked attention
+                        sequence_ids: None,
+                        mamba_slot_mapping: None,
                         slot_mapping: Tensor::zeros(seq_len, DType::I64, device)
                             .expect("slot_mapping tensor creation failed"),
                         block_tables: None,
@@ -356,6 +372,9 @@ impl InferenceWorker {
                         max_seqlen_q: seq_len,
                         max_seqlen_k: seq_len,
                         max_context_len: max_context,
+                        disable_flash_attn: None,
+                        seqlens: None,
+                        flashinfer_metadata: None,
                     };
 
                     // Forward pass for next step (no KV cache - recompute everything)
@@ -364,6 +383,7 @@ impl InferenceWorker {
                         &positions_tensor,
                         None, // Don't use KV cache - recompute each time
                         &step_metadata,
+                        None,
                     ) {
                         Ok(logits) => logits,
                         Err(e) => {
@@ -518,6 +538,7 @@ impl InferenceWorker {
             &positions_tensor,
             None, // Don't use KV cache - recompute each time for simplicity
             &work.input_metadata,
+            None,
         );
 
         match forward_result {
@@ -677,6 +698,8 @@ impl InferenceWorker {
 
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true,
+                        sequence_ids: None,
+                        mamba_slot_mapping: None,
                         slot_mapping: Tensor::zeros(seq_len, DType::I64, device)
                             .expect("slot_mapping tensor creation failed"),
                         block_tables: None,
@@ -686,6 +709,9 @@ impl InferenceWorker {
                         max_seqlen_q: seq_len,
                         max_seqlen_k: seq_len,
                         max_context_len: max_context,
+                        disable_flash_attn: None,
+                        seqlens: None,
+                        flashinfer_metadata: None,
                     };
 
                     // Forward pass for next step
@@ -694,6 +720,7 @@ impl InferenceWorker {
                         &positions_tensor,
                         None,
                         &step_metadata,
+                        None,
                     ) {
                         Ok(logits) => logits,
                         Err(e) => {

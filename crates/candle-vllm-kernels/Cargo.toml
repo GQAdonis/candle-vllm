@@ -1,0 +1,24 @@
+[package]
+name = "candle-vllm-kernels"
+version = "0.4.5"
+edition = "2021"
+description = "Attention, MoE and GEMM kernels for Rust"
+categories = ["science"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+
+[build-dependencies]
+cudaforge = "0.1.5"
+anyhow = { version = "1", features = ["backtrace"] }
+sha2 = "0.10"
+ureq = { version = "2.10", default-features = true }
+
+[lib]
+name = "candle_vllm_kernels"
+
+[features]
+no-marlin = []
+no-fp8-kvcache = []
+cutlass = []
+flashinfer = []

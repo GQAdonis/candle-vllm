@@ -1,3 +1,4 @@
+use crate::scheduler::kv_compression::KvCacheCompressionConfig;
 use serde::{Deserialize, Serialize};
 
 /// Unified engine parameters for model initialization
@@ -62,6 +63,12 @@ pub struct EngineParams {
     /// In-situ quantization method
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isq: Option<String>,
+
+    /// TurboQuant KV-cache compression configuration.
+    /// When set, KV vectors are stored in compressed form to reduce memory usage
+    /// (6–10x reduction). `None` disables compression (default, zero-overhead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kvcache_compression: Option<KvCacheCompressionConfig>,
 }
 
 impl Default for EngineParams {
@@ -82,6 +89,7 @@ impl Default for EngineParams {
             frequency_penalty: Some(0.0),
             presence_penalty: Some(0.0),
             isq: None,
+            kvcache_compression: None,
         }
     }
 }
@@ -110,6 +118,7 @@ impl EngineParams {
             frequency_penalty: Some(0.0),
             presence_penalty: Some(0.0),
             isq: None,
+            kvcache_compression: None,
         }
     }
 
@@ -159,6 +168,9 @@ impl EngineParams {
         }
         if other.isq.is_some() {
             self.isq = other.isq.clone();
+        }
+        if other.kvcache_compression.is_some() {
+            self.kvcache_compression = other.kvcache_compression.clone();
         }
         self
     }

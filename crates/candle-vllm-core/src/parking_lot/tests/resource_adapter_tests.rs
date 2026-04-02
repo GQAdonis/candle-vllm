@@ -38,6 +38,8 @@ fn test_resource_adapter_from_cache_config() {
         fully_init: true,
         dtype: DType::F16,
         kvcache_mem_gpu: 1024,
+        mamba_cache_budget_bytes: 0,
+        compression: None,
     };
 
     let adapter = ResourceAdapter::from_cache_config(&cache_config);
@@ -54,6 +56,8 @@ fn test_resource_adapter_from_cache_config_no_gpu_blocks() {
         fully_init: false,
         dtype: DType::F16,
         kvcache_mem_gpu: 0,
+        mamba_cache_budget_bytes: 0,
+        compression: None,
     };
 
     let adapter = ResourceAdapter::from_cache_config(&cache_config);
@@ -183,6 +187,8 @@ fn test_calculate_resource_cost_with_config() {
         fully_init: true,
         dtype: DType::F16,
         kvcache_mem_gpu: 1024,
+        mamba_cache_budget_bytes: 0,
+        compression: None,
     };
 
     let cost = calculate_resource_cost(100, 50, Some(&cache_config));

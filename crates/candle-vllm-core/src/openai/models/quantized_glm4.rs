@@ -89,7 +89,7 @@ impl GGUFGLM4 {
             rope_theta,
             rope_local_base_freq: None,
             bos_token_id: None,
-            eos_token_id: super::TokenID(Either::Left(None)),
+            eos_token_id: Some(super::TokenID(Either::Left(None))),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
@@ -106,10 +106,12 @@ impl GGUFGLM4 {
             custom_stop_tokens: None,
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quant: None,
             quantization_config: None,
             moe_config: None,
-            quant: Some("gguf".to_string()),
+            isq_quant: None,
             fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            extra_config_json: None,
         }
     }
 
@@ -119,6 +121,7 @@ impl GGUFGLM4 {
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
+        yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -176,7 +179,7 @@ impl GGUFGLM4 {
             None
         };
 
-        let cfg = GGUFGLM4::into_config(
+        let mut cfg = GGUFGLM4::into_config(
             embedding_length,
             head_dim,
             0,
@@ -189,6 +192,7 @@ impl GGUFGLM4 {
             partial_rotary_factor,
             kv_cache_dtype,
         );
+        cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,
             &cfg,
