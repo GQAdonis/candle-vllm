@@ -57,31 +57,9 @@ impl QuantizedGatedAttention {
     ) -> Result<Tensor> {
         let (seq_len, _) = x.dims2()?;
 
-        {
-            let xf = x.flatten_all()?.to_dtype(DType::F32)?;
-            tracing::warn!(
-                x_min = xf.min(0)?.to_scalar::<f32>()?,
-                x_max = xf.max(0)?.to_scalar::<f32>()?,
-                x_shape = ?x.shape(),
-                x_dtype = ?x.dtype(),
-                "Full attention input"
-            );
-        }
-
         let q_full = self.attention_wq.forward(x)?;
         let k = self.attention_wk.forward(x)?;
         let v = self.attention_wv.forward(x)?;
-
-        {
-            let qf = q_full.flatten_all()?.to_dtype(DType::F32)?;
-            tracing::warn!(
-                q_full_min = qf.min(0)?.to_scalar::<f32>()?,
-                q_full_max = qf.max(0)?.to_scalar::<f32>()?,
-                q_full_shape = ?q_full.shape(),
-                q_full_dtype = ?q_full.dtype(),
-                "After Q projection"
-            );
-        }
 
         // Split Q into query and gate (each num_heads * head_dim)
         let local_q_dim = self.n_head * self.head_dim;
@@ -103,18 +81,6 @@ impl QuantizedGatedAttention {
             (q, k)
         };
 
-        {
-            let qf = q.flatten_all()?;
-            let kf = k.flatten_all()?;
-            tracing::warn!(
-                q_pre_norm_min = qf.min(0)?.to_scalar::<f32>()?,
-                q_pre_norm_max = qf.max(0)?.to_scalar::<f32>()?,
-                k_pre_norm_min = kf.min(0)?.to_scalar::<f32>()?,
-                k_pre_norm_max = kf.max(0)?.to_scalar::<f32>()?,
-                "Q/K before RMSNorm"
-            );
-        }
-
         // Per-head RMSNorm
         let q_flat = q.flatten(0, 1)?;
         let k_flat = k.flatten(0, 1)?;
@@ -123,23 +89,6 @@ impl QuantizedGatedAttention {
         let q = q_flat.reshape((seq_len, self.n_head, self.head_dim))?;
         let k = k_flat.reshape((seq_len, self.n_kv_head, self.head_dim))?;
 
-        // Diagnostic: check Q/K before RoPE
-        {
-            let qf = q.flatten_all()?;
-            let kf = k.flatten_all()?;
-            let qmax = qf.max(0)?.to_scalar::<f32>()?;
-            let kmax = kf.max(0)?.to_scalar::<f32>()?;
-            let qmin = qf.min(0)?.to_scalar::<f32>()?;
-            let kmin = kf.min(0)?.to_scalar::<f32>()?;
-            tracing::warn!(
-                qmin, qmax, kmin, kmax,
-                q_dtype = ?q.dtype(), k_dtype = ?k.dtype(),
-                q_shape = ?q.shape(), k_shape = ?k.shape(),
-                pos_shape = ?input_positions.shape(), pos_dtype = ?input_positions.dtype(),
-                "Before RoPE"
-            );
-        }
-
         // Apply rotary embeddings
         let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
         let (q, k, v) = (
@@ -147,20 +96,6 @@ impl QuantizedGatedAttention {
             k.to_dtype(self.dtype)?,
             v.to_dtype(self.dtype)?,
         );
-
-        {
-            let qf = q.flatten_all()?.to_dtype(DType::F32)?;
-            let kf = k.flatten_all()?.to_dtype(DType::F32)?;
-            let qmax = qf.max(0)?.to_scalar::<f32>()?;
-            let kmax = kf.max(0)?.to_scalar::<f32>()?;
-            if qmax.is_nan() || kmax.is_nan() || qmax.is_infinite() || kmax.is_infinite() {
-                tracing::error!(
-                    qmax, kmax,
-                    is_prefill = input_metadata.is_prefill,
-                    "NaN/Inf in Q or K after RoPE!"
-                );
-            }
-        }
 
         // Paged attention with reshape_and_cache for KV cache
         let y = self
@@ -245,7 +180,9 @@ impl QuantizedGatedDeltaNet {
         let is_prefill = input_metadata.is_prefill;
 
         // Project inputs (SplitQkvZaLegacy pattern for GGUF)
-        let proj_qkv = self.in_proj_qkv.forward(xs)?;
+        // QMatMul with quantized tensors needs F32 input; cast to model dtype after
+        let xs_f32 = xs.to_dtype(DType::F32)?;
+        let proj_qkv = self.in_proj_qkv.forward(&xs_f32)?.to_dtype(xs.dtype())?;
         let q = proj_qkv.narrow(1, 0, self.key_dim)?.contiguous()?;
         let k = proj_qkv
             .narrow(1, self.key_dim, self.key_dim)?
@@ -253,9 +190,9 @@ impl QuantizedGatedDeltaNet {
         let v = proj_qkv
             .narrow(1, self.key_dim * 2, self.value_dim)?
             .contiguous()?;
-        let z = self.in_proj_z.forward(xs)?;
-        let b = self.in_proj_b.forward(xs)?;
-        let a = self.in_proj_a.forward(xs)?;
+        let z = self.in_proj_z.forward(&xs_f32)?.to_dtype(xs.dtype())?;
+        let b = self.in_proj_b.forward(&xs_f32)?.to_dtype(xs.dtype())?;
+        let a = self.in_proj_a.forward(&xs_f32)?.to_dtype(xs.dtype())?;
 
         let mixed_qkv = Tensor::cat(&[&q, &k, &v], 1)?;
 
@@ -365,9 +302,9 @@ impl QuantizedGatedDeltaNet {
             self.head_v_dim,
         )?;
 
-        // Output projection
-        self.out_proj
-            .forward(&gated_output.to_dtype(xs.dtype())?)
+        // Output projection — QMatMul (quantized) expects F32 input
+        let result = self.out_proj.forward(&gated_output.to_dtype(DType::F32)?)?;
+        Ok(result)
     }
 
     #[cfg(not(any(feature = "cuda", feature = "metal")))]
@@ -412,25 +349,25 @@ impl DecoderLayer {
     ) -> Result<Tensor> {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs)?;
-        {
-            let f = xs.flatten_all()?.to_dtype(DType::F32)?;
-            let fmax = f.max(0)?.to_scalar::<f32>()?;
-            if fmax.is_nan() || fmax.is_infinite() {
-                let rf = residual.flatten_all()?.to_dtype(DType::F32)?;
-                tracing::error!(
-                    residual_min = rf.min(0)?.to_scalar::<f32>()?,
-                    residual_max = rf.max(0)?.to_scalar::<f32>()?,
-                    post_norm_max = fmax,
-                    "NaN/Inf after input_layernorm"
-                );
-            }
-        }
         let xs = match &self.attn {
             LayerType::FullAttention(attn) => {
                 attn.forward(&xs, attention_mask, input_positions, cache, input_metadata)?
             }
             LayerType::LinearAttention(gdn) => {
-                gdn.forward(&xs, mamba_cache, input_metadata, seq_slots)?
+                // GDN must run in model dtype (BF16) to match training precision.
+                // QMatMul outputs F32 which causes numerical divergence in the
+                // conv1d/recurrence path. Cast down before, cast back after.
+                let xs_typed = if xs.dtype() != _model_dtype {
+                    xs.to_dtype(_model_dtype)?
+                } else {
+                    xs.clone()
+                };
+                let out = gdn.forward(&xs_typed, mamba_cache, input_metadata, seq_slots)?;
+                if out.dtype() != xs.dtype() {
+                    out.to_dtype(xs.dtype())?
+                } else {
+                    out
+                }
             }
         };
         let xs = (xs + residual)?;
@@ -614,7 +551,9 @@ impl GGUFQWen3_5 {
         );
         cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
 
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
+        // Qwen3.5 uses interleaved RoPE (mrope_interleaved=true),
+        // which maps to is_gpt_neox=false in candle's convention.
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, false)?);
 
         // Resolve hybrid config to get layer types and GDN parameters
         let hybrid = resolve_qwen3_hybrid_config(&cfg);
@@ -890,18 +829,6 @@ impl GGUFQWen3_5 {
                 &seq_slots,
                 self.dtype,
             )?;
-            if _idx <= 3 {
-                let flat = xs.flatten_all()?.to_dtype(DType::F32)?;
-                let min = flat.min(0)?.to_scalar::<f32>()?;
-                let max = flat.max(0)?.to_scalar::<f32>()?;
-                let mean = flat.mean_all()?.to_scalar::<f32>()?;
-                tracing::warn!(
-                    layer = _idx,
-                    dtype = ?xs.dtype(),
-                    min, max, mean,
-                    "Layer output stats"
-                );
-            }
         }
 
         if !seqlens.is_empty() && !return_hidden {

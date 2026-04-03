@@ -367,7 +367,15 @@ impl DefaultConversation {
     /// Convert this conversation to a String prompt
     pub fn get_prompt(&mut self, thinking: bool, tools: &Vec<Tool>) -> String {
         match self.apply_chat_template(true, thinking, tools) {
-            Ok(prompt) => prompt,
+            Ok(prompt) => {
+                tracing::info!(
+                    prompt_len = prompt.len(),
+                    has_im_start = prompt.contains("<|im_start|>"),
+                    preview = &prompt[..prompt.len().min(120)],
+                    "Chat template rendered OK"
+                );
+                prompt
+            }
             Err(e) => {
                 if self.chat_template.is_some() {
                     tracing::warn!("apply chat template failed {:?}", e);

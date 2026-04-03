@@ -105,6 +105,7 @@ fn get_gen_prompt(
             info!(
                 model = %request.model,
                 prompt_chars = prompt.chars().count(),
+                prompt_preview = &prompt[..prompt.len().min(200)],
                 "✅ CHAT: prompt built"
             );
             prompt

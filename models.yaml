@@ -45,11 +45,11 @@ models:
     weight_file: Qwen3.5-9B-Q4_K_M.gguf
     params:
       dtype: bf16
-      temperature: 0.7
-      top_p: 0.9
-      top_k: 40
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
       frequency_penalty: 0.0
-      presence_penalty: 0.0
+      presence_penalty: 1.5
       mem: 512
       max_num_seqs: 16
       block_size: 64
