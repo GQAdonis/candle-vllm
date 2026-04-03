@@ -156,10 +156,10 @@ fn compute_kvcache_budget_bytes(free_bytes: usize, fraction: f32) -> Result<usiz
 pub fn query_device_memory(device: &Device) -> Result<DeviceMemoryReport> {
     match device {
         #[cfg(feature = "cuda")]
-        Device::Cuda(cuda) => {
+        Device::Cuda(_cuda) => {
             use candle_core::cuda_backend::cudarc::driver::result::mem_get_info;
 
-            cuda.bind_to_thread().map_err(candle::Error::wrap)?;
+            // cudarc 0.19+ manages CUDA context binding implicitly via streams
             let (free_bytes, total_bytes) = mem_get_info().map_err(candle::Error::wrap)?;
             let used_bytes = total_bytes.saturating_sub(free_bytes);
             Ok(DeviceMemoryReport {

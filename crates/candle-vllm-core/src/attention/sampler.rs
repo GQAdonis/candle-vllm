@@ -1,6 +1,6 @@
 use candle_core::{Result, Tensor};
 #[cfg(feature = "cuda")]
-use candle_vllm_kernels as kernels; #[allow(unused_imports)] use candle_vllm_kernels::ffi;
+#[allow(unused_imports)] use candle_vllm_kernels::ffi;
 #[cfg(feature = "metal")]
 use metal;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,12 +42,13 @@ impl Sampler {
         let token_pos = self.next_token_pos();
         use candle_core::cuda_backend::cudarc::driver::DevicePtr;
         use candle_core::cuda_backend::CudaStorageSlice;
-        use candle_core::cuda_backend::WrapErr;
+
         use candle_core::DType;
 
         let (b, v) = logits.dims2()?;
         let dev = logits.device().as_cuda_device()?;
         let dtype = logits.dtype();
+        let cuda_stream = dev.cuda_stream();
 
         // 1. Ensure logits are contiguous and on GPU
         let logits = if !logits.is_contiguous() {
@@ -63,16 +64,15 @@ impl Sampler {
         };
 
         // 2. Alloc output buffer
-        let out_tokens = unsafe { dev.alloc::<i32>(b) }.w()?;
-        let out_ptr = out_tokens.device_ptr();
-        let stream = *dev.cu_stream() as i64;
-        let out_ptr = *out_ptr as *mut core::ffi::c_void;
+        let out_tokens = unsafe { dev.alloc::<i32>(b) }?;
+        let out_ptr = out_tokens.device_ptr(&cuda_stream).0 as *mut core::ffi::c_void;
+        let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
 
         // 3. Get pointer and call appropriate FFI based on dtype
         match dtype {
             DType::F32 => {
                 let logits_ptr = match &cuda_storage.slice {
-                    CudaStorageSlice::F32(inp) => *inp.device_ptr() as *const f32,
+                    CudaStorageSlice::F32(inp) => inp.device_ptr(&cuda_stream).0 as *const f32,
                     _ => candle_core::bail!("Dtype mismatch: expected F32 storage"),
                 };
                 unsafe {
@@ -92,7 +92,7 @@ impl Sampler {
             }
             DType::F16 => {
                 let logits_ptr = match &cuda_storage.slice {
-                    CudaStorageSlice::F16(inp) => *inp.device_ptr() as *const core::ffi::c_void,
+                    CudaStorageSlice::F16(inp) => inp.device_ptr(&cuda_stream).0 as *const core::ffi::c_void,
                     _ => candle_core::bail!("Dtype mismatch: expected F16 storage"),
                 };
                 unsafe {
@@ -112,7 +112,7 @@ impl Sampler {
             }
             DType::BF16 => {
                 let logits_ptr = match &cuda_storage.slice {
-                    CudaStorageSlice::BF16(inp) => *inp.device_ptr() as *const core::ffi::c_void,
+                    CudaStorageSlice::BF16(inp) => inp.device_ptr(&cuda_stream).0 as *const core::ffi::c_void,
                     _ => candle_core::bail!("Dtype mismatch: expected BF16 storage"),
                 };
                 unsafe {
@@ -137,10 +137,9 @@ impl Sampler {
         }
 
         // 4. Copy back to host
-        let mut host_out = vec![0i32; b];
-        dev.dtoh_sync_copy_into(&out_tokens, &mut host_out).w()?;
+        let host_out = dev.clone_dtoh(&out_tokens)?;
 
-        Ok(host_out.into_iter().map(|x| x as u32).collect())
+        Ok(host_out.iter().map(|&x| x as u32).collect())
     }
 
     #[cfg(feature = "metal")]

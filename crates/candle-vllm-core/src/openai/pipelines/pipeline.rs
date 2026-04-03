@@ -684,7 +684,7 @@ impl DefaultLoader {
                     let paths: Vec<PathBuf> = paths.get_weight_filenames();
                     let device = crate::new_device(*dev_id).unwrap();
                     #[cfg(feature = "nccl")]
-                    let _ = device.as_cuda_device().unwrap().bind_to_thread();
+                    let _ = device.as_cuda_device().unwrap().cuda_stream().context().bind_to_thread();
 
                     #[cfg(feature = "nccl")]
                     tracing::warn!(
@@ -697,7 +697,7 @@ impl DefaultLoader {
                     #[cfg(feature = "nccl")]
                     let comm = Rc::new(
                         Comm::from_rank(
-                            device.as_cuda_device().unwrap().cuda_device(),
+                            device.as_cuda_device().unwrap().cuda_stream(),
                             rank,
                             num_shards,
                             id,

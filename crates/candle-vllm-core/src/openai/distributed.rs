@@ -380,7 +380,7 @@ impl CustomOp1 for AllReduce {
     ) -> Result<(candle_core::CudaStorage, Shape)> {
         use candle_core::backend::BackendStorage;
         use candle_core::cuda_backend::cudarc::nccl::safe::ReduceOp;
-        use candle_core::cuda_backend::WrapErr;
+
         use candle_core::DType;
         use half::{bf16, f16};
 
@@ -396,7 +396,7 @@ impl CustomOp1 for AllReduce {
                 let full_slice = s.as_cuda_slice::<bf16>()?;
                 // Slice to only the valid elements (handles narrow/view tensors)
                 let src_slice = full_slice.slice(start_offset..start_offset + elem_count);
-                let mut dst = unsafe { dev.alloc::<bf16>(elem_count) }.w()?;
+                let mut dst = unsafe { dev.alloc::<bf16>(elem_count) }?;
                 self.comm
                     .all_reduce(&src_slice, &mut dst, &ReduceOp::Sum)
                     .map_err(candle_core::Error::debug)?;
@@ -406,7 +406,7 @@ impl CustomOp1 for AllReduce {
                 let full_slice = s.as_cuda_slice::<f16>()?;
                 // Slice to only the valid elements (handles narrow/view tensors)
                 let src_slice = full_slice.slice(start_offset..start_offset + elem_count);
-                let mut dst = unsafe { dev.alloc::<f16>(elem_count) }.w()?;
+                let mut dst = unsafe { dev.alloc::<f16>(elem_count) }?;
                 self.comm
                     .all_reduce(&src_slice, &mut dst, &ReduceOp::Sum)
                     .map_err(candle_core::Error::debug)?;

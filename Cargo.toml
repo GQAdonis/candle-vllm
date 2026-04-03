@@ -27,7 +27,7 @@ async-stream = "0.3"
 axum = { version = "0.8.7", features = ["tokio"] }
 chrono = "0.4.41"
 clap = { version = "4.4.7", features = ["derive"] }
-candle-core = { git = "https://github.com/GQAdonis/candle.git", version = "0.10.2", features = ["metal"] }
+candle-core = { git = "https://github.com/GQAdonis/candle.git", version = "0.10.2" }
 candle-nn = { git = "https://github.com/GQAdonis/candle.git", version = "0.10.2" }
 candle-metal-kernels = { git = "https://github.com/GQAdonis/candle.git", version = "0.10.2" }
 candle-vllm-kernels = { path = "crates/candle-vllm-kernels" }

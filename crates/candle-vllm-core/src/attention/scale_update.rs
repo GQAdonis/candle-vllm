@@ -3,8 +3,6 @@ use candle_core as candle;
 use candle_core::backend::BackendStorage;
 use candle_core::{DType, Result, Tensor};
 #[cfg(feature = "cuda")]
-use candle_vllm_kernels as kernels;
-#[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
 
@@ -45,24 +43,28 @@ impl candle::InplaceOp2 for KvScaleUpdate {
 
         use std::ffi::c_void;
 
-        let (src_ptr, dst_ptr) = match (&k.slice, &v.slice) {
-            (CudaStorageSlice::BF16(inp_k), CudaStorageSlice::BF16(inp_v)) => (
-                *inp_k.device_ptr() as *const c_void,
-                *inp_v.device_ptr() as *const c_void,
-            ),
-            (CudaStorageSlice::F16(inp_k), CudaStorageSlice::F16(inp_v)) => (
-                *inp_k.device_ptr() as *const c_void,
-                *inp_v.device_ptr() as *const c_void,
-            ),
-            (CudaStorageSlice::F32(inp_k), CudaStorageSlice::F32(inp_v)) => (
-                *inp_k.device_ptr() as *const c_void,
-                *inp_v.device_ptr() as *const c_void,
-            ),
+        let cuda_stream = dev.cuda_stream();
+        let (src_ptr, dst_ptr, _guard_k, _guard_v) = match (&k.slice, &v.slice) {
+            (CudaStorageSlice::BF16(inp_k), CudaStorageSlice::BF16(inp_v)) => {
+                let (pk, gk) = inp_k.device_ptr(&cuda_stream);
+                let (pv, gv) = inp_v.device_ptr(&cuda_stream);
+                (pk as *const c_void, pv as *const c_void, gk, gv)
+            }
+            (CudaStorageSlice::F16(inp_k), CudaStorageSlice::F16(inp_v)) => {
+                let (pk, gk) = inp_k.device_ptr(&cuda_stream);
+                let (pv, gv) = inp_v.device_ptr(&cuda_stream);
+                (pk as *const c_void, pv as *const c_void, gk, gv)
+            }
+            (CudaStorageSlice::F32(inp_k), CudaStorageSlice::F32(inp_v)) => {
+                let (pk, gk) = inp_k.device_ptr(&cuda_stream);
+                let (pv, gv) = inp_v.device_ptr(&cuda_stream);
+                (pk as *const c_void, pv as *const c_void, gk, gv)
+            }
             _ => {
                 panic!("Invalid dtype for kv scale update!")
             }
         };
-        let stream = *dev.cu_stream() as i64;
+        let stream = dev.cu_stream() as i64;
 
         let (k_scales, k_scales_layout) = self.k_scales.storage_and_layout();
         let k_scales = match &*k_scales {
@@ -78,8 +80,10 @@ impl candle::InplaceOp2 for KvScaleUpdate {
         };
         let v_scales = v_scales.slice(v_scales_layout.start_offset()..);
 
-        let k_scales_ptr = *k_scales.device_ptr() as *mut f32;
-        let v_scales_ptr = *v_scales.device_ptr() as *mut f32;
+        let (k_scales_raw, _guard_ks) = k_scales.device_ptr(&cuda_stream);
+        let k_scales_ptr = k_scales_raw as *mut f32;
+        let (v_scales_raw, _guard_vs) = v_scales.device_ptr(&cuda_stream);
+        let v_scales_ptr = v_scales_raw as *mut f32;
         unsafe {
             let (num_tokens, num_heads, head_dim) =
                 if let Ok((b, s, h, d)) = k_layout.shape().dims4() {

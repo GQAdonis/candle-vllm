@@ -5,8 +5,6 @@ use candle_core as candle;
 use candle_core::backend::BackendStorage;
 use candle_core::{DType, Result, Tensor};
 #[cfg(feature = "cuda")]
-use candle_vllm_kernels as kernels;
-#[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
 #[cfg(feature = "metal")]
@@ -42,15 +40,25 @@ impl candle::InplaceOp1 for CausalMask {
             "Casual mask tensor should has same dim0 and dim1!"
         );
         use std::ffi::c_void;
-        let src_ptr = match &input.slice {
-            CudaStorageSlice::F32(inp) => *inp.device_ptr() as *mut c_void,
-            CudaStorageSlice::F16(inp) => *inp.device_ptr() as *mut c_void,
-            CudaStorageSlice::BF16(inp) => *inp.device_ptr() as *mut c_void,
+        let cuda_stream = dev.cuda_stream();
+        let (src_ptr, _guard) = match &input.slice {
+            CudaStorageSlice::F32(inp) => {
+                let (p, g) = inp.device_ptr(&cuda_stream);
+                (p as *mut c_void, g)
+            }
+            CudaStorageSlice::F16(inp) => {
+                let (p, g) = inp.device_ptr(&cuda_stream);
+                (p as *mut c_void, g)
+            }
+            CudaStorageSlice::BF16(inp) => {
+                let (p, g) = inp.device_ptr(&cuda_stream);
+                (p as *mut c_void, g)
+            }
             _ => {
                 candle_core::bail!("Casual mask tensor should has dtype of f16, bf16 or f32!")
             }
         };
-        let stream = *dev.cu_stream() as i64;
+        let stream = dev.cu_stream() as i64;
 
         unsafe {
             match input.dtype() {

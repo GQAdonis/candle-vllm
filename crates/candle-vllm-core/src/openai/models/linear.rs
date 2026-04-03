@@ -69,6 +69,9 @@ pub struct Linear {
     qzeros: Option<Tensor>,
     g_idx: Option<Tensor>,
     workspace: Option<Tensor>,
+    /// Tracks the original device for offload/reload support.
+    #[cfg(feature = "cuda")]
+    original_device: Option<Device>,
 }
 
 impl Linear {
@@ -80,6 +83,8 @@ impl Linear {
             qzeros: None,
             g_idx: None,
             workspace: None,
+            #[cfg(feature = "cuda")]
+            original_device: None,
         }
     }
 
@@ -109,13 +114,18 @@ impl Linear {
 
     #[cfg(feature = "cuda")]
     pub fn reload(&mut self) -> Result<()> {
-        self.weight = self.weight.reload()?;
+        if let Some(dev) = &self.original_device {
+            self.weight = self.weight.to_device(dev)?;
+        }
         Ok(())
     }
 
     #[cfg(feature = "cuda")]
     pub fn offload(&mut self) -> Result<()> {
-        self.weight = self.weight.offload()?;
+        if self.original_device.is_none() {
+            self.original_device = Some(self.weight.device().clone());
+        }
+        self.weight = self.weight.to_device(&Device::Cpu)?;
         Ok(())
     }
 }
@@ -288,6 +298,8 @@ pub fn qlinear(
                     qzeros: None,
                     g_idx: None,
                     workspace: Some(workspace),
+                    #[cfg(feature = "cuda")]
+                    original_device: None,
                 })
             } else {
                 let qzeros = vb.get_with_hints_dtype(
@@ -336,6 +348,8 @@ pub fn qlinear(
                         qzeros: Some(qzeros),
                         g_idx,
                         workspace: None,
+                        #[cfg(feature = "cuda")]
+                        original_device: None,
                     })
                 } else {
                     //repack gptq format to marlin
@@ -405,6 +419,8 @@ pub fn qlinear(
                         qzeros: Some(qzeros),
                         g_idx,
                         workspace: Some(workspace),
+                        #[cfg(feature = "cuda")]
+                        original_device: None,
                     })
                 }
             }
@@ -427,6 +443,9 @@ pub struct QLinear {
     dtype: DType,
     is_awq: bool,
     transposed_weight: bool,
+    /// Tracks the original device for offload/reload support.
+    #[cfg(feature = "cuda")]
+    original_device: Option<Device>,
 }
 
 impl QLinear {
@@ -452,6 +471,8 @@ impl QLinear {
             dtype: DType::F32,
             is_awq: false,
             transposed_weight: false,
+            #[cfg(feature = "cuda")]
+            original_device: None,
         })
     }
 
@@ -468,6 +489,8 @@ impl QLinear {
             dtype: linear.weight().dtype(),
             is_awq,
             transposed_weight: false,
+            #[cfg(feature = "cuda")]
+            original_device: None,
         }
     }
 
@@ -485,6 +508,8 @@ impl QLinear {
             dtype,
             is_awq: false,
             transposed_weight: false,
+            #[cfg(feature = "cuda")]
+            original_device: None,
         }
     }
 
@@ -504,6 +529,8 @@ impl QLinear {
             dtype: DType::F32,
             is_awq: false,
             transposed_weight: false,
+            #[cfg(feature = "cuda")]
+            original_device: None,
         }
     }
 
@@ -531,6 +558,8 @@ impl QLinear {
             dtype,
             is_awq: false,
             transposed_weight: transposed,
+            #[cfg(feature = "cuda")]
+            original_device: None,
         }
     }
 
@@ -598,6 +627,8 @@ impl QLinear {
             dtype: old.dtype,
             is_awq: false,
             transposed_weight: false,
+            #[cfg(feature = "cuda")]
+            original_device: None,
         }
     }
 
@@ -624,7 +655,12 @@ impl QLinear {
     #[cfg(feature = "cuda")]
     pub fn offload(&mut self) -> Result<()> {
         let w = match &self.inner {
-            QMatMul::Tensor(qw) => qw.offload()?,
+            QMatMul::Tensor(qw) => {
+                if self.original_device.is_none() {
+                    self.original_device = Some(qw.device().clone());
+                }
+                qw.to_device(&Device::Cpu)?
+            }
             _ => {
                 unreachable!()
             }
@@ -635,8 +671,9 @@ impl QLinear {
 
     #[cfg(feature = "cuda")]
     pub fn reload(&mut self) -> Result<()> {
-        let w = match &self.inner {
-            QMatMul::Tensor(qw) => qw.reload()?,
+        let w = match (&self.inner, &self.original_device) {
+            (QMatMul::Tensor(qw), Some(dev)) => qw.to_device(dev)?,
+            (QMatMul::Tensor(qw), None) => qw.clone(),
             _ => {
                 unreachable!()
             }

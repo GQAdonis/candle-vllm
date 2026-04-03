@@ -1,7 +1,7 @@
 #[cfg(feature = "cuda")]
-use candle_core::cuda_backend::cudarc::driver::sys;
+use candle_core::cuda_backend::cudarc::driver::{result, sys};
 #[cfg(feature = "cuda")]
-use candle_core::cuda_backend::cudarc::driver::CudaDevice;
+use candle_core::cuda_backend::CudaDevice;
 
 #[cfg(feature = "cuda")]
 use std::{
@@ -14,12 +14,22 @@ static SM_CACHE: OnceLock<Mutex<HashMap<usize, Option<i32>>>> = OnceLock::new();
 
 #[cfg(feature = "cuda")]
 pub fn compute_capability(dev: &CudaDevice) -> Option<(i32, i32)> {
-    let major = dev
-        .attribute(sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
-        .ok()?;
-    let minor = dev
-        .attribute(sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
-        .ok()?;
+    let cu_dev = dev.cu_device();
+    // SAFETY: cu_dev is a valid device handle obtained from the CudaDevice wrapper.
+    let major = unsafe {
+        result::device::get_attribute(
+            cu_dev,
+            sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+        )
+        .ok()?
+    };
+    let minor = unsafe {
+        result::device::get_attribute(
+            cu_dev,
+            sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+        )
+        .ok()?
+    };
     Some((major, minor))
 }
 

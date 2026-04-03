@@ -7,9 +7,9 @@ use std::ptr;
 use std::sync::Arc;
 
 use crate::attention::InputMetadata;
-use candle_core::cuda_backend::cudarc::driver::sys;
+use candle_core::cuda_backend::cudarc::driver::{sys, DevicePtr};
 use candle_core::cuda_backend::cudarc::driver::sys::{
-    lib, CUgraphInstantiate_flags, CUmemPool_attribute, CUmemoryPool, CUstreamCaptureMode,
+    CUgraphInstantiate_flags, CUmemPool_attribute, CUmemoryPool, CUstreamCaptureMode,
     CUstreamCaptureStatus,
 };
 use candle_core::cuda_backend::CudaDevice;
@@ -17,6 +17,65 @@ use candle_core::{DType, Device, Result, Tensor};
 use parking_lot::RwLock;
 use std::mem::MaybeUninit;
 use tqdm::tqdm;
+
+/// In-place zero fill for a CUDA tensor (equivalent to the upstream `zero_()` method).
+fn tensor_zero_(t: &Tensor) -> Result<()> {
+    t.zero_set()
+}
+
+/// In-place copy from `src` into `dst` at byte offset 0 on the GPU.
+/// This performs a raw device-to-device memcpy so that CUDA graph replay
+/// sees the data at the same captured addresses.
+fn tensor_copy_(dst: &Tensor, src: &Tensor, _offset: usize) -> Result<()> {
+    let dst_dev = match dst.device() {
+        Device::Cuda(dev) => dev.clone(),
+        _ => candle_core::bail!("tensor_copy_ requires CUDA tensors"),
+    };
+    let stream = dst_dev.cuda_stream();
+
+    let elem_size = dst.dtype().size_in_bytes();
+    let src_elems = src.elem_count();
+
+    let (dst_storage, dst_layout) = dst.storage_and_layout();
+    let dst_cuda = match &*dst_storage {
+        candle_core::Storage::Cuda(c) => c,
+        _ => candle_core::bail!("tensor_copy_ requires CUDA tensors"),
+    };
+
+    let (src_storage, src_layout) = src.storage_and_layout();
+    let src_cuda = match &*src_storage {
+        candle_core::Storage::Cuda(c) => c,
+        _ => candle_core::bail!("tensor_copy_ requires CUDA tensors"),
+    };
+
+    // For the raw memcpy we only need the base device pointers, not typed slices.
+    // Use u8 slices to get byte-level pointers.
+    let dst_slice = dst_cuda.as_cuda_slice::<u8>()?;
+    let src_slice = src_cuda.as_cuda_slice::<u8>()?;
+
+    let src_byte_offset = src_layout.start_offset() * elem_size;
+    let dst_byte_offset = dst_layout.start_offset() * elem_size;
+    let byte_count = src_elems * elem_size;
+
+    let src_view = src_slice.slice(src_byte_offset..src_byte_offset + byte_count);
+    let dst_view = dst_slice.slice(dst_byte_offset..dst_byte_offset + byte_count);
+
+    let (src_ptr, _sg) = src_view.device_ptr(&stream);
+    let (dst_ptr, _dg) = dst_view.device_ptr(&stream);
+
+    unsafe {
+        sys::cuMemcpyDtoDAsync_v2(
+            dst_ptr,
+            src_ptr,
+            byte_count as _,
+            dst_dev.cu_stream(),
+        )
+        .result()
+        .map_err(|e| candle_core::Error::Msg(format!("cuMemcpyDtoDAsync failed: {e:?}")))?;
+    }
+
+    Ok(())
+}
 
 #[allow(dead_code)]
 pub struct CudaGraph {
@@ -28,8 +87,7 @@ pub struct CudaGraph {
 impl CudaGraph {
     pub fn begin_capture(stream: sys::CUstream, mode: sys::CUstreamCaptureMode) -> Result<()> {
         unsafe {
-            lib()
-                .cuStreamBeginCapture_v2(stream, mode)
+            sys::cuStreamBeginCapture_v2(stream, mode)
                 .result()
                 .map_err(|e| candle_core::Error::Msg(format!("begin_capture failed: {e:?}")))
         }
@@ -41,8 +99,7 @@ impl CudaGraph {
     ) -> Result<CudaGraph> {
         let mut graph = MaybeUninit::uninit();
         let cu_graph = unsafe {
-            lib()
-                .cuStreamEndCapture(stream, graph.as_mut_ptr())
+            sys::cuStreamEndCapture(stream, graph.as_mut_ptr())
                 .result()
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("cuStreamEndCapture failed: {e:?}"))
@@ -52,8 +109,7 @@ impl CudaGraph {
 
         let mut graph_exec = MaybeUninit::uninit();
         let cu_graph_exec = unsafe {
-            lib()
-                .cuGraphInstantiateWithFlags(graph_exec.as_mut_ptr(), cu_graph, flags as u32 as u64)
+            sys::cuGraphInstantiateWithFlags(graph_exec.as_mut_ptr(), cu_graph, flags as u32 as u64)
                 .result()
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("cuGraphInstantiateWithFlags failed: {e:?}"))
@@ -70,8 +126,7 @@ impl CudaGraph {
     pub fn capture_status(stream: sys::CUstream) -> Result<sys::CUstreamCaptureStatus> {
         let mut status = CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE;
         unsafe {
-            lib()
-                .cuStreamIsCapturing(stream, &mut status)
+            sys::cuStreamIsCapturing(stream, &mut status)
                 .result()
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("cuGraphInstantiateWithFlags failed: {e:?}"))
@@ -82,8 +137,7 @@ impl CudaGraph {
 
     pub fn launch(&self) -> Result<()> {
         unsafe {
-            lib()
-                .cuGraphLaunch(self.cu_graph_exec, self.stream)
+            sys::cuGraphLaunch(self.cu_graph_exec, self.stream)
                 .result()
                 .map_err(|e| candle_core::Error::Msg(format!("cuGraphLaunch failed: {e:?}")))
         }
@@ -162,8 +216,7 @@ where
 
     fn sync_stream(&self) -> Result<()> {
         unsafe {
-            lib()
-                .cuStreamSynchronize(self.device.cu_stream().clone())
+            sys::cuStreamSynchronize(self.device.cu_stream())
                 .result()
                 .map_err(|e| candle_core::Error::Msg(format!("cuStreamSynchronize failed: {e:?}")))
         }
@@ -172,8 +225,7 @@ where
     fn create_capture_pool(&self) -> Result<CUmemoryPool> {
         let mut pool: CUmemoryPool = ptr::null_mut();
         unsafe {
-            lib()
-                .cuDeviceGetDefaultMemPool(&mut pool, self.device.cu_device())
+            sys::cuDeviceGetDefaultMemPool(&mut pool, self.device.cu_device())
                 .result()
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("cuDeviceGetDefaultMemPool failed: {e:?}"))
@@ -183,8 +235,7 @@ where
             *self.pool_handle.write() = Some(handle);
 
             let threshold: u64 = u64::MAX;
-            lib()
-                .cuMemPoolSetAttribute(
+            sys::cuMemPoolSetAttribute(
                     pool,
                     CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
                     &threshold as *const _ as _,
@@ -203,11 +254,10 @@ where
         }
 
         unsafe {
-            let status = CudaGraph::capture_status(self.device.cu_stream().clone())?;
+            let status = CudaGraph::capture_status(self.device.cu_stream())?;
             if status != CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_ACTIVE {
                 let pool = self.create_capture_pool()?;
-                lib()
-                    .cuDeviceSetMemPool(self.device.cu_device(), pool)
+                sys::cuDeviceSetMemPool(self.device.cu_device(), pool)
                     .result()
                     .map_err(|e| {
                         candle_core::Error::Msg(format!("cuDeviceSetMemPool failed: {e:?}"))
@@ -222,8 +272,7 @@ where
     fn get_mem_pool_attribute(pool: CUmemoryPool, attr: CUmemPool_attribute) -> Result<usize> {
         let mut value: usize = 0;
         unsafe {
-            sys::lib()
-                .cuMemPoolGetAttribute(pool, attr, &mut value as *mut _ as *mut std::ffi::c_void)
+            sys::cuMemPoolGetAttribute(pool, attr, &mut value as *mut _ as *mut std::ffi::c_void)
                 .result()
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("cuMemPoolGetAttribute failed: {e:?}"))
@@ -269,7 +318,7 @@ where
         self.sync_stream()?;
         self.set_capture_mem_pool()?;
         CudaGraph::begin_capture(
-            self.device.cu_stream().clone(),
+            self.device.cu_stream(),
             CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED,
         )?;
         Ok(())
@@ -280,7 +329,7 @@ where
         let bs = self.current_bs.take().unwrap();
 
         let graph = CudaGraph::end_capture(
-            self.device.cu_stream().clone(),
+            self.device.cu_stream(),
             CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
         )?;
         self.captured_graphs
@@ -596,40 +645,40 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                     .copied()
             };
             if let Some(batch) = selected_batch {
-                graph_vars.input_ids.zero_()?;
-                graph_vars.input_ids.copy_(&input_ids, 0)?;
-                graph_vars.positions.zero_()?;
-                graph_vars.positions.copy_(&positions, 0)?;
+                tensor_zero_(&graph_vars.input_ids)?;
+                tensor_copy_(&graph_vars.input_ids, &input_ids, 0)?;
+                tensor_zero_(&graph_vars.positions)?;
+                tensor_copy_(&graph_vars.positions, &positions, 0)?;
 
                 if let Some(ms_mapping) = input_metadata.mamba_slot_mapping.as_ref() {
-                    graph_vars.mamba_slot_mapping.zero_()?;
-                    graph_vars.mamba_slot_mapping.copy_(&ms_mapping, 0)?;
+                    tensor_zero_(&graph_vars.mamba_slot_mapping)?;
+                    tensor_copy_(&graph_vars.mamba_slot_mapping, ms_mapping, 0)?;
                 } else {
-                    graph_vars.mamba_slot_mapping.zero_()?;
+                    tensor_zero_(&graph_vars.mamba_slot_mapping)?;
                 }
 
                 let s_mapping = input_metadata.slot_mapping.as_ref();
-                graph_vars.slot_mapping.zero_()?;
-                graph_vars.slot_mapping.copy_(&s_mapping, 0)?;
+                tensor_zero_(&graph_vars.slot_mapping)?;
+                tensor_copy_(&graph_vars.slot_mapping, s_mapping, 0)?;
 
                 let c_lens = input_metadata.context_lens.as_ref().unwrap();
-                graph_vars.context_lens.zero_()?;
-                graph_vars.context_lens.copy_(&c_lens, 0)?;
+                tensor_zero_(&graph_vars.context_lens)?;
+                tensor_copy_(&graph_vars.context_lens, c_lens, 0)?;
 
                 let b_tables = input_metadata.block_tables.as_ref().unwrap();
                 let padded_table = b_tables
                     .pad_with_zeros(1, 0, max_num_blocks - b_tables.dim(1)?)?
                     .contiguous()?;
 
-                graph_vars.block_tables.zero_()?;
-                graph_vars.block_tables.copy_(&padded_table, 0)?;
+                tensor_zero_(&graph_vars.block_tables)?;
+                tensor_copy_(&graph_vars.block_tables, &padded_table, 0)?;
 
                 #[cfg(feature = "flashinfer")]
                 if let Some(fm) = &input_metadata.flashinfer_metadata {
                     let mut indptr_host = fm.indptr_host.clone();
                     if input_batch == batch {
-                        graph_vars.flashinfer_indptr.zero_()?;
-                        graph_vars.flashinfer_indptr.copy_(&fm.indptr, 0)?;
+                        tensor_zero_(&graph_vars.flashinfer_indptr)?;
+                        tensor_copy_(&graph_vars.flashinfer_indptr, &fm.indptr, 0)?;
                     } else {
                         let last = *indptr_host.last().unwrap_or(&0);
                         for _ in (input_batch + 1)..=batch {
@@ -640,14 +689,14 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                             (batch + 1,),
                             graph_vars.input_ids.device(),
                         )?;
-                        graph_vars.flashinfer_indptr.copy_(&indptr_padded, 0)?;
+                        tensor_copy_(&graph_vars.flashinfer_indptr, &indptr_padded, 0)?;
                     }
 
-                    graph_vars.flashinfer_last_len.zero_()?;
-                    graph_vars.flashinfer_last_len.copy_(&fm.last_len, 0)?;
+                    tensor_zero_(&graph_vars.flashinfer_last_len)?;
+                    tensor_copy_(&graph_vars.flashinfer_last_len, &fm.last_len, 0)?;
 
-                    graph_vars.flashinfer_indices.zero_()?;
-                    graph_vars.flashinfer_indices.copy_(&fm.indices, 0)?;
+                    tensor_zero_(&graph_vars.flashinfer_indices)?;
+                    tensor_copy_(&graph_vars.flashinfer_indices, &fm.indices, 0)?;
 
                     if let Some(params) = self.flashinfer_kv_params {
                         let dev = self

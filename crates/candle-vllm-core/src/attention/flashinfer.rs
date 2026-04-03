@@ -1,5 +1,5 @@
-use crate::cuda_utils;
-use crate::kernels;
+use crate::attention::cuda_utils;
+use crate::attention::kernels;
 use candle_core as candle;
 use candle_core::backend::BackendStorage;
 use candle_core::cuda_backend::cudarc::driver::{sys, CudaSlice, DevicePtr};

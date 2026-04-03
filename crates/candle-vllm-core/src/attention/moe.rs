@@ -3,8 +3,6 @@ use candle_core::cuda_backend::cudarc::driver::DevicePtr;
 use candle_core::quantized::QTensor;
 use candle_core::{Result, Tensor};
 #[cfg(feature = "cuda")]
-use candle_vllm_kernels as kernels;
-#[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
 
@@ -23,10 +21,12 @@ fn cuda_ptr_f16bf16(t: &Tensor) -> Result<*const core::ffi::c_void> {
     let (storage, _) = t.storage_and_layout();
     match (&*storage, t.dtype()) {
         (candle::Storage::Cuda(c), candle_core::DType::F16) => {
-            Ok(*c.as_cuda_slice::<half::f16>()?.device_ptr() as *const core::ffi::c_void)
+            let stream = c.device().cuda_stream();
+            Ok(c.as_cuda_slice::<half::f16>()?.device_ptr(&stream).0 as *const core::ffi::c_void)
         }
         (candle::Storage::Cuda(c), candle_core::DType::BF16) => {
-            Ok(*c.as_cuda_slice::<half::bf16>()?.device_ptr() as *const core::ffi::c_void)
+            let stream = c.device().cuda_stream();
+            Ok(c.as_cuda_slice::<half::bf16>()?.device_ptr(&stream).0 as *const core::ffi::c_void)
         }
         _ => candle_core::bail!("expected CUDA f16/bf16 tensor"),
     }
@@ -38,7 +38,8 @@ fn cuda_ptr_u8(t: &Tensor) -> Result<*const u8> {
     let (storage, _) = t.storage_and_layout();
     match (&*storage, t.dtype()) {
         (candle::Storage::Cuda(c), candle_core::DType::U8) => {
-            Ok(*c.as_cuda_slice::<u8>()?.device_ptr() as *const u8)
+            let stream = c.device().cuda_stream();
+            Ok(c.as_cuda_slice::<u8>()?.device_ptr(&stream).0 as *const u8)
         }
         _ => candle_core::bail!("expected CUDA u8 tensor"),
     }
@@ -50,7 +51,8 @@ fn cuda_ptr_f32(t: &Tensor) -> Result<*const f32> {
     let (storage, _) = t.storage_and_layout();
     match (&*storage, t.dtype()) {
         (candle::Storage::Cuda(c), candle_core::DType::F32) => {
-            Ok(*c.as_cuda_slice::<f32>()?.device_ptr() as *const f32)
+            let stream = c.device().cuda_stream();
+            Ok(c.as_cuda_slice::<f32>()?.device_ptr(&stream).0 as *const f32)
         }
         _ => candle_core::bail!("expected CUDA f32 tensor"),
     }
@@ -62,7 +64,8 @@ fn cuda_ptr_topk_ids_i32(t: &Tensor) -> Result<*const i32> {
     let (storage, _) = t.storage_and_layout();
     match (&*storage, t.dtype()) {
         (candle::Storage::Cuda(c), candle_core::DType::U32) => {
-            Ok(*c.as_cuda_slice::<u32>()?.device_ptr() as *const i32)
+            let stream = c.device().cuda_stream();
+            Ok(c.as_cuda_slice::<u32>()?.device_ptr(&stream).0 as *const i32)
         }
         _ => candle_core::bail!("expected CUDA u32 tensor for topk ids"),
     }
@@ -74,10 +77,12 @@ fn cuda_mut_ptr_f16bf16(t: &Tensor) -> Result<*mut core::ffi::c_void> {
     let (storage, _) = t.storage_and_layout();
     match (&*storage, t.dtype()) {
         (candle::Storage::Cuda(c), candle_core::DType::F16) => {
-            Ok(*c.as_cuda_slice::<half::f16>()?.device_ptr() as *mut core::ffi::c_void)
+            let stream = c.device().cuda_stream();
+            Ok(c.as_cuda_slice::<half::f16>()?.device_ptr(&stream).0 as *mut core::ffi::c_void)
         }
         (candle::Storage::Cuda(c), candle_core::DType::BF16) => {
-            Ok(*c.as_cuda_slice::<half::bf16>()?.device_ptr() as *mut core::ffi::c_void)
+            let stream = c.device().cuda_stream();
+            Ok(c.as_cuda_slice::<half::bf16>()?.device_ptr(&stream).0 as *mut core::ffi::c_void)
         }
         _ => candle_core::bail!("expected CUDA f16/bf16 tensor"),
     }
@@ -122,7 +127,7 @@ pub fn flashinfer_fused_moe(
         candle_core::bail!("flashinfer fused moe: input and weight dtype must match");
     }
     let dev = input.device().as_cuda_device()?;
-    let stream = *dev.cu_stream() as i64;
+    let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
 
     let output = Tensor::zeros((num_tokens, hidden_size), input.dtype(), input.device())?;
     let status = unsafe {
@@ -215,7 +220,7 @@ pub fn flashinfer_fused_moe_fp8(
     }
     let input_dtype = cuda_dtype_code(input.dtype())?;
     let dev = input.device().as_cuda_device()?;
-    let stream = *dev.cu_stream() as i64;
+    let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
 
     let output = Tensor::zeros(
         (num_tokens, hidden_size),
@@ -259,7 +264,7 @@ pub fn moe_gemm(
 ) -> Result<Tensor> {
     use candle::cuda_backend::cudarc::driver::DevicePtr;
     use candle_core as candle;
-    use candle_core::cuda_backend::WrapErr;
+
     use candle_core::DType;
     use half::{bf16, f16};
 
@@ -288,6 +293,7 @@ pub fn moe_gemm(
             size_k
         );
         let dev = input.device().as_cuda_device()?;
+        let cuda_stream = dev.cuda_stream();
         let data_type = match input.dtype() {
             DType::F16 => 0,
             DType::BF16 => 1,
@@ -320,35 +326,36 @@ pub fn moe_gemm(
             _ => candle::bail!("experts_ids must be a cuda tensor"),
         };
 
-        let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
-            let (topk_weights, _) = topk_weights.storage_and_layout();
-            let topk_weights = match &*topk_weights {
+        // Hoist storage guard to keep it alive for the duration of the FFI calls
+        let _topk_w_storage = topk_weights.as_ref().map(|t| t.storage_and_layout());
+        let topk_weights_ptr = if let Some((ref storage, _)) = _topk_w_storage {
+            let topk_weights_slice = match &**storage {
                 candle::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
                 _ => candle::bail!("topk_weights must be a cuda tensor"),
             };
-            *topk_weights.device_ptr() as *const f32
+            topk_weights_slice.device_ptr(&cuda_stream).0 as *const f32
         } else {
             std::ptr::null() as *const f32
         };
 
-        let output = unsafe { dev.alloc::<T>(size_m * size_n) }.w()?;
+        let output = unsafe { dev.alloc::<T>(size_m * size_n) }?;
 
-        let stream = *dev.cu_stream() as i64;
+        let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
         use core::ffi::c_void;
 
         unsafe {
             if is_prefill || size_m > 128 {
-                let expert_counts = dev.alloc::<u32>(num_experts).w()?;
-                let expert_offsets = dev.alloc::<u32>(num_experts + 1).w()?;
+                let expert_counts = dev.alloc_zeros::<u32>(num_experts)?;
+                let expert_offsets = dev.alloc_zeros::<u32>(num_experts + 1)?;
                 ffi::moe_gemm_wmma(
-                    *input.device_ptr() as *const c_void,   // [size_m, size_k]
-                    *weights.device_ptr() as *const c_void, // [num_experts, size_n, size_k]
-                    *sorted_token_ids.device_ptr() as *const i32,
-                    *experts_ids.device_ptr() as *const i32,
+                    input.device_ptr(&cuda_stream).0 as *const c_void,   // [size_m, size_k]
+                    weights.device_ptr(&cuda_stream).0 as *const c_void, // [num_experts, size_n, size_k]
+                    sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                    experts_ids.device_ptr(&cuda_stream).0 as *const i32,
                     topk_weights_ptr,
-                    *output.device_ptr() as *mut c_void, // [size_m, size_n]
-                    *expert_counts.device_ptr() as *mut i32, // pre-allocated buffer [num_experts]
-                    *expert_offsets.device_ptr() as *mut i32, // pre-allocated buffer [num_experts + 1]
+                    output.device_ptr(&cuda_stream).0 as *mut c_void, // [size_m, size_n]
+                    expert_counts.device_ptr(&cuda_stream).0 as *mut i32, // pre-allocated buffer [num_experts]
+                    expert_offsets.device_ptr(&cuda_stream).0 as *mut i32, // pre-allocated buffer [num_experts + 1]
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
@@ -360,12 +367,12 @@ pub fn moe_gemm(
                 );
             } else {
                 ffi::moe_gemv(
-                    *input.device_ptr() as *const c_void,   // [size_m, size_k]
-                    *weights.device_ptr() as *const c_void, // [num_experts, size_n, size_k]
-                    *sorted_token_ids.device_ptr() as *const i32,
-                    *experts_ids.device_ptr() as *const i32,
+                    input.device_ptr(&cuda_stream).0 as *const c_void,   // [size_m, size_k]
+                    weights.device_ptr(&cuda_stream).0 as *const c_void, // [num_experts, size_n, size_k]
+                    sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                    experts_ids.device_ptr(&cuda_stream).0 as *const i32,
                     topk_weights_ptr,
-                    *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                    output.device_ptr(&cuda_stream).0 as *mut c_void, // [size_m, size_n]
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
@@ -378,7 +385,7 @@ pub fn moe_gemm(
         }
 
         let output = candle::CudaStorage::wrap_cuda_slice(output, dev.clone());
-        let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n))?;
+        let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n), candle::op::BackpropOp::none(), false);
 
         Ok(output)
     }
@@ -436,7 +443,7 @@ pub fn moe_gemm_fp8(
 ) -> Result<Tensor> {
     use candle::cuda_backend::cudarc::driver::DevicePtr;
     use candle_core as candle;
-    use candle_core::cuda_backend::WrapErr;
+
     use candle_core::DType;
     use half::{bf16, f16};
 
@@ -485,8 +492,9 @@ pub fn moe_gemm_fp8(
         let device = input.device().clone();
         let input_dtype = input.dtype();
         let dev = input.device().as_cuda_device()?;
+        let cuda_stream = dev.cuda_stream();
         #[cfg(feature = "cutlass")]
-        let sm_version = crate::cuda_utils::sm_version(dev).unwrap_or(0) as i32;
+        let sm_version = crate::attention::cuda_utils::sm_version(dev).unwrap_or(0) as i32;
         let data_type = match input_dtype {
             DType::F16 => 0,
             DType::BF16 => 1,
@@ -525,13 +533,14 @@ pub fn moe_gemm_fp8(
             _ => candle::bail!("experts_ids must be a cuda tensor"),
         };
 
-        let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
-            let (topk_weights, _) = topk_weights.storage_and_layout();
-            let topk_weights = match &*topk_weights {
+        // Hoist storage guard to keep it alive for the duration of the FFI calls
+        let _topk_w_storage2 = topk_weights.as_ref().map(|t| t.storage_and_layout());
+        let topk_weights_ptr = if let Some((ref storage, _)) = _topk_w_storage2 {
+            let topk_weights_slice = match &**storage {
                 candle::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
                 _ => candle::bail!("topk_weights must be a cuda tensor"),
             };
-            *topk_weights.device_ptr() as *const f32
+            topk_weights_slice.device_ptr(&cuda_stream).0 as *const f32
         } else {
             std::ptr::null() as *const f32
         };
@@ -612,16 +621,16 @@ pub fn moe_gemm_fp8(
                     _ => candle::bail!("output must be a cuda tensor"),
                 };
 
-                let expert_counts = unsafe { dev.alloc::<i32>(num_experts).w()? };
-                let expert_offsets = unsafe { dev.alloc::<i32>(num_experts + 1).w()? };
+                let expert_counts = unsafe { dev.alloc::<i32>(num_experts) }?;
+                let expert_offsets = unsafe { dev.alloc::<i32>(num_experts + 1) }?;
 
-                let stream = *dev.cu_stream() as i64;
+                let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
                 use core::ffi::c_void;
                 unsafe {
                     ffi::fp8_quantize_per_token_group_launch(
-                        *input.device_ptr() as *const c_void,
-                        *input_q.device_ptr() as *mut c_void,
-                        *input_scale.device_ptr() as *mut f32,
+                        input.device_ptr(&cuda_stream).0 as *const c_void,
+                        input_q.device_ptr(&cuda_stream).0 as *mut c_void,
+                        input_scale.device_ptr(&cuda_stream).0 as *mut f32,
                         num_groups as i32,
                         128,
                         num_groups_per_row as i32,
@@ -632,9 +641,9 @@ pub fn moe_gemm_fp8(
                     );
 
                     ffi::moe_fp8_shuffle_rows_u8(
-                        *input_q.device_ptr() as *const u8,
-                        *sorted_token_ids.device_ptr() as *const i32,
-                        *rep_a_q.device_ptr() as *mut u8,
+                        input_q.device_ptr(&cuda_stream).0 as *const u8,
+                        sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                        rep_a_q.device_ptr(&cuda_stream).0 as *mut u8,
                         input_rows as i64,
                         size_m as i64,
                         size_k as i64,
@@ -646,9 +655,9 @@ pub fn moe_gemm_fp8(
                     // or regular shuffle for row-major scales (SM90)
                     if is_column_major_scales {
                         ffi::moe_fp8_shuffle_rows_f32_strided(
-                            *input_scale.device_ptr() as *const f32,
-                            *sorted_token_ids.device_ptr() as *const i32,
-                            *rep_a_scales.device_ptr() as *mut f32,
+                            input_scale.device_ptr(&cuda_stream).0 as *const f32,
+                            sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                            rep_a_scales.device_ptr(&cuda_stream).0 as *mut f32,
                             input_rows as i64,
                             size_m as i64,
                             num_groups_per_row as i64,
@@ -659,9 +668,9 @@ pub fn moe_gemm_fp8(
                         );
                     } else {
                         ffi::moe_fp8_shuffle_rows_f32(
-                            *input_scale.device_ptr() as *const f32,
-                            *sorted_token_ids.device_ptr() as *const i32,
-                            *rep_a_scales.device_ptr() as *mut f32,
+                            input_scale.device_ptr(&cuda_stream).0 as *const f32,
+                            sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                            rep_a_scales.device_ptr(&cuda_stream).0 as *mut f32,
                             input_rows as i64,
                             size_m as i64,
                             num_groups_per_row as i64,
@@ -671,9 +680,9 @@ pub fn moe_gemm_fp8(
                     }
 
                     ffi::moe_fp8_calculate_expert_offsets(
-                        *experts_ids.device_ptr() as *const i32,
-                        *expert_counts.device_ptr() as *mut i32,
-                        *expert_offsets.device_ptr() as *mut i32,
+                        experts_ids.device_ptr(&cuda_stream).0 as *const i32,
+                        expert_counts.device_ptr(&cuda_stream).0 as *mut i32,
+                        expert_offsets.device_ptr(&cuda_stream).0 as *mut i32,
                         num_experts as i32,
                         size_m as i32,
                         is_prefill,
@@ -682,11 +691,11 @@ pub fn moe_gemm_fp8(
 
                     if data_type == 0 {
                         ffi::moe_fp8_grouped_gemm_f16(
-                            *rep_a_q.device_ptr() as *const u8,
-                            *weights.device_ptr() as *const u8,
-                            *rep_a_scales.device_ptr() as *const f32,
-                            *weight_scales.device_ptr() as *const f32,
-                            *expert_offsets.device_ptr() as *const i32,
+                            rep_a_q.device_ptr(&cuda_stream).0 as *const u8,
+                            weights.device_ptr(&cuda_stream).0 as *const u8,
+                            rep_a_scales.device_ptr(&cuda_stream).0 as *const f32,
+                            weight_scales.device_ptr(&cuda_stream).0 as *const f32,
+                            expert_offsets.device_ptr(&cuda_stream).0 as *const i32,
                             num_experts as i32,
                             size_m as i32,
                             size_n as i32,
@@ -694,13 +703,13 @@ pub fn moe_gemm_fp8(
                             block_size_n as i32,
                             block_size_k as i32,
                             sm_version as i32,
-                            *rep_out.device_ptr() as *mut c_void,
+                            rep_out.device_ptr(&cuda_stream).0 as *mut c_void,
                             stream as i64,
                         );
                         ffi::moe_fp8_scatter_rows_f16(
-                            *rep_out.device_ptr() as *const c_void,
-                            *sorted_token_ids.device_ptr() as *const i32,
-                            *output.device_ptr() as *mut c_void,
+                            rep_out.device_ptr(&cuda_stream).0 as *const c_void,
+                            sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                            output.device_ptr(&cuda_stream).0 as *mut c_void,
                             size_m as i64,
                             size_m as i64,
                             size_n as i64,
@@ -709,11 +718,11 @@ pub fn moe_gemm_fp8(
                         );
                     } else {
                         ffi::moe_fp8_grouped_gemm_bf16(
-                            *rep_a_q.device_ptr() as *const u8,
-                            *weights.device_ptr() as *const u8,
-                            *rep_a_scales.device_ptr() as *const f32,
-                            *weight_scales.device_ptr() as *const f32,
-                            *expert_offsets.device_ptr() as *const i32,
+                            rep_a_q.device_ptr(&cuda_stream).0 as *const u8,
+                            weights.device_ptr(&cuda_stream).0 as *const u8,
+                            rep_a_scales.device_ptr(&cuda_stream).0 as *const f32,
+                            weight_scales.device_ptr(&cuda_stream).0 as *const f32,
+                            expert_offsets.device_ptr(&cuda_stream).0 as *const i32,
                             num_experts as i32,
                             size_m as i32,
                             size_n as i32,
@@ -721,13 +730,13 @@ pub fn moe_gemm_fp8(
                             block_size_n as i32,
                             block_size_k as i32,
                             sm_version as i32,
-                            *rep_out.device_ptr() as *mut c_void,
+                            rep_out.device_ptr(&cuda_stream).0 as *mut c_void,
                             stream as i64,
                         );
                         ffi::moe_fp8_scatter_rows_bf16(
-                            *rep_out.device_ptr() as *const c_void,
-                            *sorted_token_ids.device_ptr() as *const i32,
-                            *output.device_ptr() as *mut c_void,
+                            rep_out.device_ptr(&cuda_stream).0 as *const c_void,
+                            sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                            output.device_ptr(&cuda_stream).0 as *mut c_void,
                             size_m as i64,
                             size_m as i64,
                             size_n as i64,
@@ -738,30 +747,30 @@ pub fn moe_gemm_fp8(
                 }
 
                 let output = candle::CudaStorage::wrap_cuda_slice(output.clone(), dev.clone());
-                let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n))?;
+                let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n), candle::op::BackpropOp::none(), false);
                 return Ok(output);
             }
         }
 
-        let output = unsafe { dev.alloc::<T>(size_m * size_n) }.w()?;
+        let output = unsafe { dev.alloc::<T>(size_m * size_n) }?;
 
-        let stream = *dev.cu_stream() as i64;
+        let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
         use core::ffi::c_void;
 
         unsafe {
             if is_prefill || size_m > 128 {
-                let expert_counts = dev.alloc::<u32>(num_experts).w()?;
-                let expert_offsets = dev.alloc::<u32>(num_experts + 1).w()?;
+                let expert_counts = dev.alloc_zeros::<u32>(num_experts)?;
+                let expert_offsets = dev.alloc_zeros::<u32>(num_experts + 1)?;
                 ffi::moe_gemm_wmma_fp8(
-                    *input.device_ptr() as *const c_void,
-                    *weights.device_ptr() as *const u8,
-                    *weight_scales.device_ptr() as *const f32,
-                    *sorted_token_ids.device_ptr() as *const i32,
-                    *experts_ids.device_ptr() as *const i32,
+                    input.device_ptr(&cuda_stream).0 as *const c_void,
+                    weights.device_ptr(&cuda_stream).0 as *const u8,
+                    weight_scales.device_ptr(&cuda_stream).0 as *const f32,
+                    sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                    experts_ids.device_ptr(&cuda_stream).0 as *const i32,
                     topk_weights_ptr,
-                    *output.device_ptr() as *mut c_void,
-                    *expert_counts.device_ptr() as *mut i32,
-                    *expert_offsets.device_ptr() as *mut i32,
+                    output.device_ptr(&cuda_stream).0 as *mut c_void,
+                    expert_counts.device_ptr(&cuda_stream).0 as *mut i32,
+                    expert_offsets.device_ptr(&cuda_stream).0 as *mut i32,
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
@@ -775,13 +784,13 @@ pub fn moe_gemm_fp8(
                 );
             } else {
                 ffi::moe_gemv_fp8(
-                    *input.device_ptr() as *const c_void,
-                    *weights.device_ptr() as *const u8,
-                    *weight_scales.device_ptr() as *const f32,
-                    *sorted_token_ids.device_ptr() as *const i32,
-                    *experts_ids.device_ptr() as *const i32,
+                    input.device_ptr(&cuda_stream).0 as *const c_void,
+                    weights.device_ptr(&cuda_stream).0 as *const u8,
+                    weight_scales.device_ptr(&cuda_stream).0 as *const f32,
+                    sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                    experts_ids.device_ptr(&cuda_stream).0 as *const i32,
                     topk_weights_ptr,
-                    *output.device_ptr() as *mut c_void,
+                    output.device_ptr(&cuda_stream).0 as *mut c_void,
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
@@ -796,7 +805,7 @@ pub fn moe_gemm_fp8(
         }
 
         let output = candle::CudaStorage::wrap_cuda_slice(output, dev.clone());
-        let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n))?;
+        let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n), candle::op::BackpropOp::none(), false);
 
         Ok(output)
     }
@@ -874,7 +883,7 @@ pub fn moe_gemm_gguf(
 ) -> Result<Tensor> {
     use candle::cuda_backend::cudarc::driver::DevicePtr;
     use candle_core as candle;
-    use candle_core::cuda_backend::WrapErr;
+
     use candle_core::quantized::GgmlDType;
     use candle_core::DType;
     use half::{bf16, f16};
@@ -901,6 +910,7 @@ pub fn moe_gemm_gguf(
             size_k1,
         );
         let dev = input.device().as_cuda_device()?;
+        let cuda_stream = dev.cuda_stream();
 
         // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5
         let gguf_dtype = match weights.dtype() {
@@ -919,13 +929,14 @@ pub fn moe_gemm_gguf(
 
         let weight_ptr = weights.device_ptr()?;
 
-        let topk_weights_ptr = if let Some(topk_weights) = &topk_weights {
-            let (topk_weights, _) = topk_weights.storage_and_layout();
-            let topk_weights = match &*topk_weights {
+        // Hoist storage guard to keep it alive for the duration of the FFI calls
+        let _topk_w_storage3 = topk_weights.as_ref().map(|t| t.storage_and_layout());
+        let topk_weights_ptr = if let Some((ref storage, _)) = _topk_w_storage3 {
+            let topk_weights_slice = match &**storage {
                 candle::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
                 _ => candle::bail!("topk_weights must be a cuda tensor"),
             };
-            *topk_weights.device_ptr() as *const f32
+            topk_weights_slice.device_ptr(&cuda_stream).0 as *const f32
         } else {
             std::ptr::null() as *const f32
         };
@@ -941,8 +952,8 @@ pub fn moe_gemm_gguf(
             _ => candle::bail!("experts_ids must be a cuda tensor"),
         };
 
-        let output = unsafe { dev.alloc::<f32>(size_m * size_n) }.w()?;
-        let stream = *dev.cu_stream() as i64;
+        let output = unsafe { dev.alloc::<f32>(size_m * size_n) }?;
+        let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
         use core::ffi::c_void;
 
         assert!(size_k % 8 == 0, "size_k must divisible by 8");
@@ -953,9 +964,9 @@ pub fn moe_gemm_gguf(
                 let (input_ptr, input_dtype) = match &*input {
                     candle::Storage::Cuda(c) => {
                         if dtype == DType::F16 {
-                            (*c.as_cuda_slice::<f16>()?.device_ptr() as *const c_void, 0)
+                            (c.as_cuda_slice::<f16>()?.device_ptr(&cuda_stream).0 as *const c_void, 0)
                         } else {
-                            (*c.as_cuda_slice::<bf16>()?.device_ptr() as *const c_void, 1)
+                            (c.as_cuda_slice::<bf16>()?.device_ptr(&cuda_stream).0 as *const c_void, 1)
                         }
                     }
                     _ => candle::bail!("input must be a cuda tensor"),
@@ -963,10 +974,10 @@ pub fn moe_gemm_gguf(
                 ffi::moe_gemm_gguf_prefill(
                     input_ptr,               // [size_m or size_m/topk, size_k]
                     weight_ptr as *const u8, // [num_experts, size_n, size_k]
-                    *sorted_token_ids.device_ptr() as *const i32,
-                    *experts_ids.device_ptr() as *const i32,
+                    sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                    experts_ids.device_ptr(&cuda_stream).0 as *const i32,
                     topk_weights_ptr,
-                    *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                    output.device_ptr(&cuda_stream).0 as *mut c_void, // [size_m, size_n]
                     num_experts as i32,
                     topk as i32,
                     size_m as i32,
@@ -986,12 +997,12 @@ pub fn moe_gemm_gguf(
                 // Use optimized small-M kernel for batch size < 8 (decode scenarios)
                 if size_m <= 8 {
                     ffi::moe_gemm_gguf_small_m(
-                        *input.device_ptr() as *const f32, // [size_m or size_m/topk, size_k]
+                        input.device_ptr(&cuda_stream).0 as *const f32, // [size_m or size_m/topk, size_k]
                         weight_ptr as *const c_void,       // [num_experts, size_n, size_k]
-                        *sorted_token_ids.device_ptr() as *const i32,
-                        *experts_ids.device_ptr() as *const i32,
+                        sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                        experts_ids.device_ptr(&cuda_stream).0 as *const i32,
                         topk_weights_ptr,
-                        *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                        output.device_ptr(&cuda_stream).0 as *mut c_void, // [size_m, size_n]
                         num_experts as i32,
                         topk as i32,
                         size_m as i32,
@@ -1002,12 +1013,12 @@ pub fn moe_gemm_gguf(
                     );
                 } else {
                     ffi::moe_gemm_gguf(
-                        *input.device_ptr() as *const f32, // [size_m or size_m/topk, size_k]
+                        input.device_ptr(&cuda_stream).0 as *const f32, // [size_m or size_m/topk, size_k]
                         weight_ptr as *const c_void,       // [num_experts, size_n, size_k]
-                        *sorted_token_ids.device_ptr() as *const i32,
-                        *experts_ids.device_ptr() as *const i32,
+                        sorted_token_ids.device_ptr(&cuda_stream).0 as *const i32,
+                        experts_ids.device_ptr(&cuda_stream).0 as *const i32,
                         topk_weights_ptr,
-                        *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                        output.device_ptr(&cuda_stream).0 as *mut c_void, // [size_m, size_n]
                         num_experts as i32,
                         topk as i32,
                         size_m as i32,
@@ -1021,7 +1032,7 @@ pub fn moe_gemm_gguf(
         }
 
         let output = candle::CudaStorage::wrap_cuda_slice(output, dev.clone());
-        let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n))?;
+        let output = Tensor::from_storage(candle::Storage::Cuda(output), (size_m, size_n), candle::op::BackpropOp::none(), false);
 
         Ok(output)
     }

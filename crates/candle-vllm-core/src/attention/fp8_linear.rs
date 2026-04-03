@@ -1,15 +1,13 @@
+#[cfg(all(feature = "cuda", any(feature = "flashinfer", feature = "cutlass")))]
+use crate::attention::cuda_utils;
 #[cfg(feature = "cuda")]
-use crate::cuda_utils;
-#[cfg(feature = "cuda")]
-use crate::candle_vllm_kernels::ffi;
+use crate::attention::kernels::ffi;
 #[cfg(feature = "metal")]
 use crate::metal_kernels;
 #[cfg(all(feature = "cuda", feature = "flashinfer"))]
 use candle_core::cuda_backend::cudarc::driver::CudaSlice;
 #[cfg(feature = "cuda")]
 use candle_core::cuda_backend::cudarc::driver::DevicePtr;
-#[cfg(feature = "cuda")]
-use candle_core::cuda_backend::WrapErr;
 use candle_core::{DType, Device, Result, Tensor};
 #[cfg(all(feature = "cuda", feature = "flashinfer"))]
 use std::cell::RefCell;
@@ -18,7 +16,7 @@ use std::cell::RefCell;
 struct FlashInferFp8Workspace {
     buffer: CudaSlice<u8>,
     size: usize,
-    device_ordinal: usize,
+    device_id: candle_core::cuda_backend::DeviceId,
 }
 
 #[cfg(all(feature = "cuda", feature = "flashinfer"))]
@@ -33,29 +31,30 @@ fn get_or_init_flashinfer_fp8_workspace(
 ) -> Result<(*mut std::ffi::c_void, usize)> {
     FLASHINFER_FP8_WORKSPACE.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let ordinal = dev.ordinal();
+        let dev_id = dev.id();
 
         let needs_init = match slot.as_ref() {
             None => true,
-            Some(existing) => existing.device_ordinal != ordinal || existing.size < required_size,
+            Some(existing) => existing.device_id != dev_id || existing.size < required_size,
         };
 
         if needs_init {
             let alloc_size = required_size.max(1);
-            let buffer = unsafe { dev.alloc::<u8>(alloc_size) }.w()?;
+            let buffer = unsafe { dev.alloc::<u8>(alloc_size) }?;
             *slot = Some(FlashInferFp8Workspace {
                 buffer,
                 size: alloc_size,
-                device_ordinal: ordinal,
+                device_id: dev_id,
             });
         }
 
         let ws = slot.as_ref().unwrap();
-        Ok((*ws.buffer.device_ptr() as *mut std::ffi::c_void, ws.size))
+        let stream = dev.cuda_stream();
+        Ok((ws.buffer.device_ptr(&stream).0 as *mut std::ffi::c_void, ws.size))
     })
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", any(feature = "flashinfer", feature = "cutlass")))]
 fn get_cuda_slice<
     T: candle_core::cuda_backend::cudarc::driver::DeviceRepr + candle_core::cuda_backend::CudaDType,
 >(
@@ -65,7 +64,11 @@ fn get_cuda_slice<
     match &*storage {
         candle_core::Storage::Cuda(c) => {
             let slice = c.as_cuda_slice::<T>()?;
-            Ok(*slice.device_ptr() as u64)
+            let stream = c.device.cuda_stream();
+            let (ptr, _guard) = slice.device_ptr(&stream);
+            let result = ptr;
+            drop(_guard);
+            Ok(result)
         }
         _ => candle_core::bail!("expecting cuda tensor"),
     }
@@ -114,35 +117,37 @@ pub fn fp8_matmul(
     match (dev, dtype) {
         #[cfg(feature = "cuda")]
         (Device::Cuda(dev), DType::F16) => {
+            let cuda_stream = dev.cuda_stream();
+
             let (input_storage, _) = input.storage_and_layout();
             let input_slice = match &*input_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<half::f16>()?,
                 _ => candle_core::bail!("input must be a cuda tensor"),
             };
-            let input_ptr = *input_slice.device_ptr() as *const core::ffi::c_void;
+            let input_ptr = input_slice.device_ptr(&cuda_stream).0 as *const core::ffi::c_void;
 
             let (weight_storage, _) = weight.storage_and_layout();
             let weight_slice = match &*weight_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<u8>()?,
                 _ => candle_core::bail!("weight must be a cuda tensor"),
             };
-            let weight_ptr = *weight_slice.device_ptr() as *const u8;
+            let weight_ptr = weight_slice.device_ptr(&cuda_stream).0 as *const u8;
 
             let (scale_storage, _) = weight_scale.storage_and_layout();
             let scale_slice = match &*scale_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
                 _ => candle_core::bail!("weight_scale must be a cuda tensor"),
             };
-            let weight_scale_ptr = *scale_slice.device_ptr() as *const f32;
+            let weight_scale_ptr = scale_slice.device_ptr(&cuda_stream).0 as *const f32;
 
             let (output_storage, _) = output.storage_and_layout();
             let output_slice = match &*output_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<half::f16>()?,
                 _ => candle_core::bail!("output allocation failed"),
             };
-            let output_ptr = *output_slice.device_ptr() as *mut core::ffi::c_void;
+            let output_ptr = output_slice.device_ptr(&cuda_stream).0 as *mut core::ffi::c_void;
 
-            let stream = *dev.cu_stream() as i64;
+            let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
 
             unsafe {
                 ffi::fp8_matmul_f16(
@@ -162,35 +167,37 @@ pub fn fp8_matmul(
         }
         #[cfg(feature = "cuda")]
         (Device::Cuda(dev), DType::BF16) => {
+            let cuda_stream = dev.cuda_stream();
+
             let (input_storage, _) = input.storage_and_layout();
             let input_slice = match &*input_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<half::bf16>()?,
                 _ => candle_core::bail!("input must be a cuda tensor"),
             };
-            let input_ptr = *input_slice.device_ptr() as *const core::ffi::c_void;
+            let input_ptr = input_slice.device_ptr(&cuda_stream).0 as *const core::ffi::c_void;
 
             let (weight_storage, _) = weight.storage_and_layout();
             let weight_slice = match &*weight_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<u8>()?,
                 _ => candle_core::bail!("weight must be a cuda tensor"),
             };
-            let weight_ptr = *weight_slice.device_ptr() as *const u8;
+            let weight_ptr = weight_slice.device_ptr(&cuda_stream).0 as *const u8;
 
             let (scale_storage, _) = weight_scale.storage_and_layout();
             let scale_slice = match &*scale_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
                 _ => candle_core::bail!("weight_scale must be a cuda tensor"),
             };
-            let weight_scale_ptr = *scale_slice.device_ptr() as *const f32;
+            let weight_scale_ptr = scale_slice.device_ptr(&cuda_stream).0 as *const f32;
 
             let (output_storage, _) = output.storage_and_layout();
             let output_slice = match &*output_storage {
                 candle_core::Storage::Cuda(c) => c.as_cuda_slice::<half::bf16>()?,
                 _ => candle_core::bail!("output allocation failed"),
             };
-            let output_ptr = *output_slice.device_ptr() as *mut core::ffi::c_void;
+            let output_ptr = output_slice.device_ptr(&cuda_stream).0 as *mut core::ffi::c_void;
 
-            let stream = *dev.cu_stream() as i64;
+            let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
 
             unsafe {
                 ffi::fp8_matmul_bf16(
@@ -331,7 +338,7 @@ pub fn fp8_matmul_flashinfer(
     }
 
     let cu_dev = dev.as_cuda_device()?;
-    let stream = *cu_dev.cu_stream() as i64;
+    let stream = cu_dev.cu_stream() as *mut std::ffi::c_void as i64;
     let m_padded = (m + 4 - 1) / 4 * 4;
     let out = unsafe { Tensor::empty_((m, n), DType::BF16, dev)? };
     let k_over_128 = k / 128;
@@ -495,7 +502,7 @@ pub fn fp8_matmul_cutlass(
     let mut output =
         unsafe { Tensor::empty_((if pad_len > 0 { m_padded } else { m }, n), dtype, dev)? };
     let cu_dev = dev.as_cuda_device()?;
-    let stream = *cu_dev.cu_stream() as i64;
+    let stream = cu_dev.cu_stream() as *mut std::ffi::c_void as i64;
     let k_over_128 = (k + 127) / 128;
 
     let input_q = if pad_len == 0 {

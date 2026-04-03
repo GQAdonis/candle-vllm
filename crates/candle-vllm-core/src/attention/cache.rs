@@ -1,5 +1,7 @@
 #[allow(unused_imports)]
 use candle_core::{backend::BackendDevice, Device, Result, Storage, Tensor};
+#[cfg(feature = "cuda")]
+use candle_core::cuda_backend::cudarc::driver::DevicePtr;
 use std::collections::HashMap;
 
 pub fn swap_blocks(
@@ -37,7 +39,7 @@ pub fn swap_blocks(
                 let cpu_num_blocks = src.dim(0)?;
                 let gpu_num_blocks = dst.dim(0)?;
                 let stream = dst_dev.cuda_stream();
-                let (dst_base_ptr, _guard) = dst_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
+                let (dst_base_ptr, _guard): (u64, _) = dst_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
                 let src_slice: &[T] = src_storage.as_slice()?;
 
                 for (src_block_number, dst_block_number) in block_mapping {
@@ -86,7 +88,7 @@ pub fn swap_blocks(
                 let gpu_num_blocks = src.dim(0)?;
                 let cpu_num_blocks = dst.dim(0)?;
                 let stream = src_dev.cuda_stream();
-                let (src_base_ptr, _guard) = src_storage
+                let (src_base_ptr, _guard): (u64, _) = src_storage
                     .as_cuda_slice::<T>()
                     .map_err(candle_core::Error::wrap)?
                     .device_ptr(&stream);
@@ -143,8 +145,8 @@ pub fn swap_blocks(
                 let local_num_blocks = dst.dim(0)?;
                 let src_stream = src_dev.cuda_stream();
                 let dst_stream = dst_dev.cuda_stream();
-                let (src_base_ptr, _src_guard) = src_storage.as_cuda_slice::<T>()?.device_ptr(&src_stream);
-                let (dst_base_ptr, _dst_guard) = dst_storage.as_cuda_slice::<T>()?.device_ptr(&dst_stream);
+                let (src_base_ptr, _src_guard): (u64, _) = src_storage.as_cuda_slice::<T>()?.device_ptr(&src_stream);
+                let (dst_base_ptr, _dst_guard): (u64, _) = dst_storage.as_cuda_slice::<T>()?.device_ptr(&dst_stream);
 
                 for (src_block_number, dst_block_number) in block_mapping {
                     let src_offset_elem: usize = src_block_number * block_size_elements;
@@ -417,7 +419,7 @@ pub fn clear_blocks(cache: &Tensor, block_ids: &Vec<u32>) -> Result<()> {
 
         let num_blocks = cache.dim(0)?;
         let stream = dst_dev.cuda_stream();
-        let (cache_base_ptr, _guard) = cache_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
+        let (cache_base_ptr, _guard): (u64, _) = cache_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
 
         for block_number in block_ids {
             let blk_offset: usize = *block_number as usize * block_size_elements;

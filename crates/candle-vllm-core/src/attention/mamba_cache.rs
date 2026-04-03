@@ -51,7 +51,7 @@ impl candle_core::InplaceOp2 for ScatterRowsUpdate {
         use candle_core::cuda_backend::cudarc::driver::DevicePtr;
         use candle_core::cuda_backend::CudaStorageSlice;
         use candle_core::DType;
-        use candle_vllm_kernels as kernels; #[allow(unused_imports)] use candle_vllm_kernels::ffi;
+        #[allow(unused_imports)] use candle_vllm_kernels::ffi;
 
         let num_rows = src_layout.shape().dims()[0];
         if num_rows == 0 {
@@ -74,27 +74,34 @@ impl candle_core::InplaceOp2 for ScatterRowsUpdate {
         let dst_off = dst_layout.start_offset();
 
         let elem_size = src.dtype().size_in_bytes();
-        let src_ptr = match &src.slice {
+        let cuda_stream = dst.device().cuda_stream();
+        let (src_ptr, _guard_src) = match &src.slice {
             CudaStorageSlice::BF16(s) => {
-                ((*s.device_ptr() as usize) + src_off * elem_size) as *const core::ffi::c_void
+                let (p, g) = s.device_ptr(&cuda_stream);
+                ((p as usize + src_off * elem_size) as *const core::ffi::c_void, g)
             }
             CudaStorageSlice::F16(s) => {
-                ((*s.device_ptr() as usize) + src_off * elem_size) as *const core::ffi::c_void
+                let (p, g) = s.device_ptr(&cuda_stream);
+                ((p as usize + src_off * elem_size) as *const core::ffi::c_void, g)
             }
             CudaStorageSlice::F32(s) => {
-                ((*s.device_ptr() as usize) + src_off * elem_size) as *const core::ffi::c_void
+                let (p, g) = s.device_ptr(&cuda_stream);
+                ((p as usize + src_off * elem_size) as *const core::ffi::c_void, g)
             }
             _ => candle_core::bail!("Unsupported src dtype for mamba scatter"),
         };
-        let dst_ptr = match &dst.slice {
+        let (dst_ptr, _guard_dst) = match &dst.slice {
             CudaStorageSlice::BF16(s) => {
-                ((*s.device_ptr() as usize) + dst_off * elem_size) as *mut core::ffi::c_void
+                let (p, g) = s.device_ptr(&cuda_stream);
+                ((p as usize + dst_off * elem_size) as *mut core::ffi::c_void, g)
             }
             CudaStorageSlice::F16(s) => {
-                ((*s.device_ptr() as usize) + dst_off * elem_size) as *mut core::ffi::c_void
+                let (p, g) = s.device_ptr(&cuda_stream);
+                ((p as usize + dst_off * elem_size) as *mut core::ffi::c_void, g)
             }
             CudaStorageSlice::F32(s) => {
-                ((*s.device_ptr() as usize) + dst_off * elem_size) as *mut core::ffi::c_void
+                let (p, g) = s.device_ptr(&cuda_stream);
+                ((p as usize + dst_off * elem_size) as *mut core::ffi::c_void, g)
             }
             _ => candle_core::bail!("Unsupported dst dtype for mamba scatter"),
         };
@@ -112,8 +119,9 @@ impl candle_core::InplaceOp2 for ScatterRowsUpdate {
                 num_rows
             );
         }
-        let slots_ptr = *slots.device_ptr() as *const core::ffi::c_long;
-        let stream = *dst.device().cu_stream() as i64;
+        let (slots_raw, _guard_slots) = slots.device_ptr(&cuda_stream);
+        let slots_ptr = slots_raw as *const core::ffi::c_long;
+        let stream = dst.device().cu_stream() as i64;
 
         unsafe {
             match dst.dtype() {

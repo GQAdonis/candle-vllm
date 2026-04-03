@@ -113,6 +113,13 @@ fn compile(platform: Platform) -> Result<(), String> {
 }
 
 fn main() -> Result<(), String> {
+    // Metal compilation is only available on macOS/iOS (Apple platforms).
+    // On other platforms this build script is a no-op.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "macos" && target_os != "ios" {
+        return Ok(());
+    }
+
     for src in METAL_SOURCES {
         println!("cargo::rerun-if-changed=src/{src}.metal");
     }

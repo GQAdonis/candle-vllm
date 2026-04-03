@@ -19,6 +19,7 @@ pub fn get_or_load_func(
         DType::F16 => "_f16",
         DType::F32 => "_f32",
         DType::F64 => "_f64",
+        _ => return Err(APIError::from(format!("unsupported dtype {:?} for kernel", dtype))),
     };
     let spec = if let Some(suffix) = suffix {
         spec.to_owned() + suffix
@@ -27,7 +28,8 @@ pub fn get_or_load_func(
     };
     let kernel = kernel_base.to_owned() + &spec;
     device
-        .get_or_load_func(&kernel, ptx_file)
+        .get_or_load_custom_func(&kernel, ptx_file, ptx_file)
+        .map(|f| f.into_cuda_function())
         .map_err(APIError::from)
 }
 

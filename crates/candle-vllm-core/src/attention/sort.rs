@@ -1,7 +1,7 @@
 use candle::{Result, Tensor};
 use candle_core as candle;
 #[cfg(feature = "cuda")]
-use candle_vllm_kernels as kernels; #[allow(unused_imports)] use candle_vllm_kernels::ffi;
+#[allow(unused_imports)] use candle_vllm_kernels::ffi;
 
 #[derive(Debug, Clone)]
 struct ArgSort {
@@ -32,27 +32,29 @@ impl candle::CustomOp1 for ArgSort {
         use candle::backend::BackendStorage;
         use candle::cuda_backend::cudarc::driver::DevicePtr;
         use candle::cuda_backend::CudaStorageSlice;
-        use candle::cuda_backend::WrapErr;
+
         let dev = storage.device();
         let elem_count = layout.shape().elem_count();
         let ncols = self.last_dim as i32;
         let nrows = elem_count as i32 / ncols;
-        let dst = unsafe { dev.alloc::<u32>(elem_count) }.w()?;
+        let dst = unsafe { dev.alloc::<u32>(elem_count) }?;
 
         use std::ffi::c_void;
+        let cuda_stream = dev.cuda_stream();
 
         let src = match &storage.slice {
-            CudaStorageSlice::U8(inp) => inp.device_ptr(),
-            CudaStorageSlice::U32(inp) => inp.device_ptr(),
-            CudaStorageSlice::I64(inp) => inp.device_ptr(),
-            CudaStorageSlice::BF16(inp) => inp.device_ptr(),
-            CudaStorageSlice::F16(inp) => inp.device_ptr(),
-            CudaStorageSlice::F32(inp) => inp.device_ptr(),
-            CudaStorageSlice::F64(inp) => inp.device_ptr(),
+            CudaStorageSlice::U8(inp) => inp.device_ptr(&cuda_stream).0,
+            CudaStorageSlice::U32(inp) => inp.device_ptr(&cuda_stream).0,
+            CudaStorageSlice::I64(inp) => inp.device_ptr(&cuda_stream).0,
+            CudaStorageSlice::BF16(inp) => inp.device_ptr(&cuda_stream).0,
+            CudaStorageSlice::F16(inp) => inp.device_ptr(&cuda_stream).0,
+            CudaStorageSlice::F32(inp) => inp.device_ptr(&cuda_stream).0,
+            CudaStorageSlice::F64(inp) => inp.device_ptr(&cuda_stream).0,
+            _ => candle::bail!("unsupported dtype for argsort"),
         };
-        let src_ptr = *src as *const c_void;
-        let dst_ptr = *dst.device_ptr() as *mut c_void;
-        let stream = *dev.cu_stream() as i64;
+        let src_ptr = src as *const c_void;
+        let dst_ptr = dst.device_ptr(&cuda_stream).0 as *mut c_void;
+        let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
         unsafe {
             if self.asc {
                 match storage.dtype() {
@@ -77,6 +79,7 @@ impl candle::CustomOp1 for ArgSort {
                     candle::DType::F64 => {
                         ffi::asort_asc_f64(src_ptr, dst_ptr, nrows, ncols, self.inplace, stream)
                     }
+                    _ => panic!("unsupported dtype for argsort"),
                 }
             } else {
                 match storage.dtype() {
@@ -101,6 +104,7 @@ impl candle::CustomOp1 for ArgSort {
                     candle::DType::F64 => {
                         ffi::asort_desc_f64(src_ptr, dst_ptr, nrows, ncols, self.inplace, stream)
                     }
+                    _ => panic!("unsupported dtype for argsort"),
                 }
             }
         }

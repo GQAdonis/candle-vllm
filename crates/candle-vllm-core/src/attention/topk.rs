@@ -4,15 +4,12 @@ use candle_core::backend::BackendStorage;
 #[allow(unused_imports)]
 use candle_core::{DType, Result, Tensor};
 #[cfg(feature = "cuda")]
-use candle_vllm_kernels as kernels;
-#[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
 
 #[cfg(feature = "cuda")]
 pub fn topk_softmax(logits: &Tensor, topk: usize) -> Result<(Tensor, Tensor)> {
     use candle::cuda_backend::cudarc::driver::DevicePtr;
-    use candle_core::cuda_backend::WrapErr;
     let (num_tokens, _) = logits.dims2()?;
     fn cuda_fwd(logits: &Tensor, topk: usize) -> Result<(Tensor, Tensor)> {
         let (num_tokens, num_experts) = logits.dims2()?;
@@ -22,24 +19,26 @@ pub fn topk_softmax(logits: &Tensor, topk: usize) -> Result<(Tensor, Tensor)> {
             "Softmax topk only accept f32 inputs!"
         );
 
+        let cuda_stream = dev.cuda_stream();
+
         let (logits, _) = logits.storage_and_layout();
         let logits = match &*logits {
             candle::Storage::Cuda(c) => c.as_cuda_slice::<f32>()?,
             _ => candle::bail!("k_scales must be a cuda tensor"),
         };
 
-        let token_expert_indices = unsafe { dev.alloc::<u32>(num_tokens * topk) }.w()?;
-        let topk_weights = unsafe { dev.alloc::<f32>(num_tokens * topk) }.w()?;
-        let topk_indices = unsafe { dev.alloc::<u32>(num_tokens * topk) }.w()?;
+        let token_expert_indices = unsafe { dev.alloc::<u32>(num_tokens * topk) }?;
+        let topk_weights = unsafe { dev.alloc::<f32>(num_tokens * topk) }?;
+        let topk_indices = unsafe { dev.alloc::<u32>(num_tokens * topk) }?;
 
-        let stream = *dev.cu_stream() as i64;
+        let stream = dev.cu_stream() as *mut std::ffi::c_void as i64;
 
         unsafe {
             ffi::topk_softmax(
-                *logits.device_ptr() as *const f32,
-                *token_expert_indices.device_ptr() as *mut i32,
-                *topk_weights.device_ptr() as *mut f32,
-                *topk_indices.device_ptr() as *mut u32,
+                logits.device_ptr(&cuda_stream).0 as *const f32,
+                token_expert_indices.device_ptr(&cuda_stream).0 as *mut i32,
+                topk_weights.device_ptr(&cuda_stream).0 as *mut f32,
+                topk_indices.device_ptr(&cuda_stream).0 as *mut u32,
                 num_experts as i32,
                 num_tokens as i32,
                 topk as i32,
@@ -53,15 +52,17 @@ pub fn topk_softmax(logits: &Tensor, topk: usize) -> Result<(Tensor, Tensor)> {
         // let token_expert_indices = Tensor::from_storage(
         //     candle::Storage::Cuda(token_expert_indices),
         //     (num_tokens, topk),
-        // )?;
+        //     candle::op::BackpropOp::none(),
+        //     false,
+        // );
 
         let topk_weights = candle::CudaStorage::wrap_cuda_slice(topk_weights, dev.clone());
         let topk_weights =
-            Tensor::from_storage(candle::Storage::Cuda(topk_weights), (num_tokens, topk))?;
+            Tensor::from_storage(candle::Storage::Cuda(topk_weights), (num_tokens, topk), candle::op::BackpropOp::none(), false);
 
         let topk_indices = candle::CudaStorage::wrap_cuda_slice(topk_indices, dev.clone());
         let topk_indices =
-            Tensor::from_storage(candle::Storage::Cuda(topk_indices), (num_tokens, topk))?;
+            Tensor::from_storage(candle::Storage::Cuda(topk_indices), (num_tokens, topk), candle::op::BackpropOp::none(), false);
 
         Ok((topk_weights, topk_indices))
     }
