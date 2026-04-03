@@ -24,7 +24,7 @@ use crate::{
             gemma3_vl::Gemma3ForConditionalGeneration, glm4::GLM4, llama::Llama, mistral::Mistral,
             mistral3_vl::Mistral3ForConditionalGeneration, phi2::Phi2,
             phi4::Phi4ForCausalLM as Phi4, quantized_glm4::GGUFGLM4, quantized_llama::GGUFLLaMa,
-            quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen, quantized_qwen3_moe::GGUFQWenMoE,
+            quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen, quantized_qwen3_5::GGUFQWen3_5, quantized_qwen3_moe::GGUFQWenMoE,
             qwen::Qwen, qwen3_5::Qwen3_5, qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE,
             qwen3_vl::Qwen3VLForConditionalGeneration, stable_lm::StableLM, yi::Yi, Config,
         },
@@ -73,6 +73,7 @@ pub enum LLMModel {
     LlamaGGUF(Arc<GGUFLLaMa>),
     Phi3GGUF(Arc<GGUFPhi3>),
     QWenGGUF(Arc<GGUFQWen>),
+    QWen3_5GGUF(Arc<GGUFQWen3_5>),
     QWenGGUFMoE(Arc<GGUFQWenMoE>),
     GLM4GGUF(Arc<GGUFGLM4>),
 }
@@ -80,7 +81,7 @@ pub enum LLMModel {
 fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
     match model {
         LLMModel::Llama(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
-        LLMModel::Qwen(_) | LLMModel::Qwen3_5(_) | LLMModel::Qwen3VL(_) | LLMModel::QWenGGUF(_) => {
+        LLMModel::Qwen(_) | LLMModel::Qwen3_5(_) | LLMModel::Qwen3VL(_) | LLMModel::QWenGGUF(_) | LLMModel::QWen3_5GGUF(_) => {
             ToolModelType::Qwen
         }
         LLMModel::Qwen3MoE(_) | LLMModel::Qwen3_5MoE(_) | LLMModel::QWenGGUFMoE(_) => {
@@ -467,6 +468,7 @@ impl DefaultLoader {
                         | "phi3"
                         | "qwen2"
                         | "qwen3"
+                        | "qwen35"
                         | "qwen2moe"
                         | "qwen3moe"
                         | "glm4"
@@ -552,6 +554,24 @@ impl DefaultLoader {
                     let cfg = model.get_config().clone();
                     (
                         LLMModel::QWenGGUF(Arc::new(model)),
+                        cfg,
+                        SeparatorStyle::Qwen,
+                    )
+                }
+                "qwen35" => {
+                    let model = GGUFQWen3_5::from_gguf(
+                        &content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        kv_cache_dtype,
+                        self.yarn_scaling_factor,
+                        Arc::clone(&reporter),
+                    )
+                    .map_err(candle_core::Error::wrap)?;
+                    let cfg = model.get_config().clone();
+                    (
+                        LLMModel::QWen3_5GGUF(Arc::new(model)),
                         cfg,
                         SeparatorStyle::Qwen,
                     )
@@ -1293,6 +1313,7 @@ impl DefaultPipeline {
             LlamaGGUF,
             Phi3GGUF,
             QWenGGUF,
+            QWen3_5GGUF,
             QWenGGUFMoE,
             GLM4GGUF,
         );
@@ -1405,6 +1426,11 @@ impl DefaultPipeline {
                         self.capturer
                             .replay(&input_tokens, &input_positions, &input_metadata)
                     }
+                    LLMModel::QWen3_5GGUF(model) => {
+                        let _guard = model.lock_mamba_cache_for_graph();
+                        self.capturer
+                            .replay(&input_tokens, &input_positions, &input_metadata)
+                    }
                     LLMModel::Qwen3_5MoE(model) => {
                         let _guard = model.lock_mamba_cache_for_graph();
                         self.capturer
@@ -1443,6 +1469,9 @@ impl DefaultPipeline {
                 qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Qwen3_5(qwen) => {
+                qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWen3_5GGUF(qwen) => {
                 qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Qwen3_5MoE(qwen) => {
@@ -1549,6 +1578,9 @@ impl DefaultPipeline {
                 input_metadata,
             ),
             LLMModel::Qwen3_5(qwen3_5) => {
+                qwen3_5.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWen3_5GGUF(qwen3_5) => {
                 qwen3_5.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Qwen3_5MoE(qwen3_5_moe) => qwen3_5_moe.forward_embedding(
@@ -1811,6 +1843,7 @@ impl DefaultPipeline {
             LLMModel::Qwen(qwen) => qwen.get_config().clone(),
             LLMModel::Qwen3MoE(qwen) => qwen.get_config().clone(),
             LLMModel::Qwen3_5(qwen) => qwen.get_config().clone(),
+            LLMModel::QWen3_5GGUF(qwen) => qwen.get_config().clone(),
             LLMModel::Qwen3_5MoE(qwen) => qwen.get_config().clone(),
             LLMModel::Qwen3VL(qwen) => qwen.get_config().clone(),
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
@@ -1860,6 +1893,7 @@ impl DefaultPipeline {
     pub fn release_sequence_state(&self, sequence_id: usize) {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.release_sequence_state(sequence_id),
+            LLMModel::QWen3_5GGUF(model) => model.release_sequence_state(sequence_id),
             LLMModel::Qwen3_5MoE(model) => model.release_sequence_state(sequence_id),
             LLMModel::Qwen3VL(model) => model.release_sequence_state(sequence_id),
             _ => {}
@@ -1869,6 +1903,7 @@ impl DefaultPipeline {
     pub fn ensure_mamba_slots_for_sequences(&self, sequence_ids: &[usize]) -> Result<Vec<usize>> {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::QWen3_5GGUF(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3_5MoE(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3VL(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
@@ -1878,6 +1913,7 @@ impl DefaultPipeline {
     pub fn get_mamba_slots_for_sequences(&self, sequence_ids: &[usize]) -> Result<Vec<usize>> {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.get_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::QWen3_5GGUF(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3_5MoE(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3VL(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
@@ -1887,6 +1923,7 @@ impl DefaultPipeline {
     pub fn has_mamba_slot_for_sequence(&self, sequence_id: usize) -> bool {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.has_mamba_slot_for_sequence(sequence_id),
+            LLMModel::QWen3_5GGUF(model) => model.has_mamba_slot_for_sequence(sequence_id),
             LLMModel::Qwen3_5MoE(model) => model.has_mamba_slot_for_sequence(sequence_id),
             LLMModel::Qwen3VL(model) => model.has_mamba_slot_for_sequence(sequence_id),
             _ => false,
@@ -1896,6 +1933,7 @@ impl DefaultPipeline {
     pub fn preallocate_mamba_cache(&self, max_num_seqs: usize) -> Result<()> {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.preallocate_mamba_cache(max_num_seqs),
+            LLMModel::QWen3_5GGUF(model) => model.preallocate_mamba_cache(max_num_seqs),
             LLMModel::Qwen3_5MoE(model) => model.preallocate_mamba_cache(max_num_seqs),
             LLMModel::Qwen3VL(model) => model.preallocate_mamba_cache(max_num_seqs),
             _ => Ok(()),
@@ -1905,6 +1943,7 @@ impl DefaultPipeline {
     pub fn set_mamba_prefix_cache_capacity(&self, capacity: usize) {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.set_mamba_prefix_cache_capacity(capacity),
+            LLMModel::QWen3_5GGUF(model) => model.set_mamba_prefix_cache_capacity(capacity),
             LLMModel::Qwen3_5MoE(model) => model.set_mamba_prefix_cache_capacity(capacity),
             LLMModel::Qwen3VL(model) => model.set_mamba_prefix_cache_capacity(capacity),
             _ => {}
@@ -1919,6 +1958,7 @@ impl DefaultPipeline {
     ) -> Result<bool> {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
+            LLMModel::QWen3_5GGUF(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             LLMModel::Qwen3_5MoE(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             LLMModel::Qwen3VL(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             _ => Ok(false),
@@ -1928,6 +1968,7 @@ impl DefaultPipeline {
     pub fn has_mamba_prefix_state(&self, hash: u64) -> Result<bool> {
         match &self.model {
             LLMModel::Qwen3_5(model) => Ok(model.has_mamba_prefix_state(hash)),
+            LLMModel::QWen3_5GGUF(model) => Ok(model.has_mamba_prefix_state(hash)),
             LLMModel::Qwen3_5MoE(model) => Ok(model.has_mamba_prefix_state(hash)),
             LLMModel::Qwen3VL(model) => Ok(model.has_mamba_prefix_state(hash)),
             _ => Ok(true),
@@ -1937,6 +1978,7 @@ impl DefaultPipeline {
     pub fn restore_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.restore_mamba_prefix_state(seq_id, hash),
+            LLMModel::QWen3_5GGUF(model) => model.restore_mamba_prefix_state(seq_id, hash),
             LLMModel::Qwen3_5MoE(model) => model.restore_mamba_prefix_state(seq_id, hash),
             LLMModel::Qwen3VL(model) => model.restore_mamba_prefix_state(seq_id, hash),
             _ => Ok(true),
@@ -1952,6 +1994,7 @@ impl DefaultPipeline {
                 self.capturer.capture(&self.device, kv_caches)?;
                 match &self.model {
                     LLMModel::Qwen3_5(model) => model.reset_mamba_cache()?,
+                    LLMModel::QWen3_5GGUF(model) => model.reset_mamba_cache()?,
                     LLMModel::Qwen3_5MoE(model) => model.reset_mamba_cache()?,
                     LLMModel::Qwen3VL(model) => model.reset_mamba_cache()?,
                     _ => {}
