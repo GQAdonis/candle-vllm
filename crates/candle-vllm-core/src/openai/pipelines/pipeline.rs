@@ -465,6 +465,7 @@ impl DefaultLoader {
                     arch.as_str(),
                     "llama"
                         | "llama3"
+                        | "mistral3"
                         | "phi3"
                         | "qwen2"
                         | "qwen3"
@@ -520,6 +521,24 @@ impl DefaultLoader {
                         LLMModel::LlamaGGUF(Arc::new(model)),
                         cfg,
                         SeparatorStyle::Llama3,
+                    )
+                }
+                "mistral3" => {
+                    let model = GGUFLLaMa::from_gguf(
+                        &content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        kv_cache_dtype,
+                        self.yarn_scaling_factor,
+                        Arc::clone(&reporter),
+                    )
+                    .map_err(candle_core::Error::wrap)?;
+                    let cfg = model.get_config().clone();
+                    (
+                        LLMModel::LlamaGGUF(Arc::new(model)),
+                        cfg,
+                        SeparatorStyle::Mistral,
                     )
                 }
                 "phi3" => {

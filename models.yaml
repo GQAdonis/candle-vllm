@@ -1,7 +1,7 @@
 idle_unload_secs: 3600  # 1 hour
 
 # Default model to use if no model is specified via CLI arguments
-default_model: qwen3.5-9b-gguf
+default_model: ministral-8b-reasoning
 
 # ============================================================================
 # Parking Lot Scheduler Configuration (Optimized for Performance)
@@ -64,6 +64,31 @@ models:
         max_queue_depth: 50
         timeout_secs: 300
     notes: "Qwen3.5 9B GGUF (Q4_K_M) hybrid GatedDeltaNet/full attention with TurboQuant 3-bit KV cache"
+
+  - name: ministral-8b-reasoning
+    hf_id: unsloth/Ministral-3-8B-Reasoning-2512-GGUF
+    weight_file: Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf
+    params:
+      dtype: bf16
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      mem: 256
+      max_num_seqs: 8
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      prefill_chunk_size: 2048
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 4096
+        max_queue_depth: 50
+        timeout_secs: 300
+    notes: "Ministral 3 8B Reasoning Q4_K_M (~4.9GB) with TurboQuant 3-bit KV cache on RTX 4070 Ti 12GB"
 
   - name: mistral-3-ministral-3B-reasoning
     hf_id: mistralai/Ministral-3-3B-Reasoning-2512
