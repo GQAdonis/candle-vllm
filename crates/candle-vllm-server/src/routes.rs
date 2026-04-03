@@ -317,6 +317,7 @@ async fn process_chat_completion_in_thread(
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(crate::chat_ui::chat_ui_handler))
         .route("/v1/models", get(models_handler))
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/v1/mcp/tools", get(mcp_tools_handler))

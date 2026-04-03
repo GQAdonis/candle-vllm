@@ -40,6 +40,7 @@ use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+pub mod chat_ui;
 pub mod models_config;
 pub mod routes;
 use tracing::{info, warn};
