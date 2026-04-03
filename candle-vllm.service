@@ -14,7 +14,6 @@ ExecStart=/usr/local/bin/candle-vllm \
     --mem 256 \
     --kvcache-compression-bits 3 \
     --kvcache-compression-policy always \
-    --ui-server \
     --p 2000
 
 Environment=HOME=/home/gqadonis
