@@ -416,9 +416,21 @@ impl LlmExecutor {
                     "Completion request processed"
                 );
 
+                // Release mamba cache state for hybrid models
+                if self.pipeline.requires_mamba_state() {
+                    let seq_id = job.request_id.as_bytes()[0] as usize;
+                    self.pipeline.release_sequence_state(seq_id);
+                }
+
                 InferenceResult::completion(choices, usage)
             }
             Err(e) => {
+                // Release mamba cache state even on error
+                if self.pipeline.requires_mamba_state() {
+                    let seq_id = job.request_id.as_bytes()[0] as usize;
+                    self.pipeline.release_sequence_state(seq_id);
+                }
+
                 error!(
                     rank = self.rank,
                     request_id = %job.request_id,

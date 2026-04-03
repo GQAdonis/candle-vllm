@@ -105,8 +105,7 @@ fn get_gen_prompt(
             info!(
                 model = %request.model,
                 prompt_chars = prompt.chars().count(),
-                prompt_preview = &prompt[..prompt.len().min(200)],
-                "✅ CHAT: prompt built"
+                "CHAT: prompt built"
             );
             prompt
         })
@@ -154,10 +153,13 @@ fn is_reasoning_model(model_name: &str) -> bool {
     // Known reasoning model patterns
     name_lower.contains("reasoning")
         || name_lower.contains("thinking")
-        || name_lower.contains("cot")  // Chain-of-thought
+        || name_lower.contains("cot") // Chain-of-thought
         || name_lower.contains("ministral") && name_lower.contains("reasoning")
         || name_lower.contains("deepseek") && name_lower.contains("r1")
         || name_lower.contains("qwq")
+        || name_lower.contains("qwen3.5")
+        || name_lower.contains("qwen35")
+        || name_lower.contains("qwen3_5")
 }
 
 /// Check if a token is part of reasoning/thinking output

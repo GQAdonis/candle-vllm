@@ -8,7 +8,7 @@ pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const DEFAULT_SEP: &str = "\n";
 
 /// Separator style for default conversation.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub enum SeparatorStyle {
     #[default]
     AddColonSingle,
@@ -331,12 +331,10 @@ impl DefaultConversation {
         env.set_lstrip_blocks(true);
         env.set_trim_blocks(true);
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
-        let template = self.chat_template.as_ref().unwrap();
-        let mut template = template.replace("[::-1]", "|reverse");
-        if template.contains("{{ meta }}") {
-            template = template.replace("{%- set meta = message.get(\"metadata\", \"\") %}", "");
-            template = template.replace("{{ meta }}", "");
-        }
+        // Apply sanitizer to handle known minijinja incompatibilities
+        let raw_template = self.chat_template.as_ref().unwrap();
+        let template = super::template_sanitizer::sanitize_template(raw_template);
+
         env.add_template(self.name.as_str(), template.as_str())
             .map_err(ApplyChatTemplateError::AddTemplateError)?;
 
@@ -366,315 +364,367 @@ impl DefaultConversation {
     }
     /// Convert this conversation to a String prompt
     pub fn get_prompt(&mut self, thinking: bool, tools: &Vec<Tool>) -> String {
+        // Step 1: Try the loaded template (with sanitizer applied)
         match self.apply_chat_template(true, thinking, tools) {
-            Ok(prompt) => {
-                tracing::info!(
-                    prompt_len = prompt.len(),
-                    has_im_start = prompt.contains("<|im_start|>"),
-                    preview = &prompt[..prompt.len().min(120)],
-                    "Chat template rendered OK"
+            Ok(prompt) if !prompt.trim().is_empty() => {
+                // Step 2: Validate the rendered output
+                let markers = super::template_registry::get_expected_markers(&self.name);
+                let valid = markers.is_empty()
+                    || markers.iter().any(|m| prompt.contains(m));
+
+                if valid {
+                    tracing::debug!(
+                        arch = %self.name,
+                        prompt_len = prompt.len(),
+                        "Template rendered and validated successfully"
+                    );
+                    return prompt;
+                }
+
+                tracing::warn!(
+                    arch = %self.name,
+                    expected_markers = ?markers,
+                    prompt_preview = &prompt[..prompt.len().min(80)],
+                    "Template rendered but FAILED validation — missing expected markers"
                 );
-                prompt
+            }
+            Ok(_empty) => {
+                tracing::warn!(
+                    arch = %self.name,
+                    "Template rendered but produced empty output"
+                );
             }
             Err(e) => {
                 if self.chat_template.is_some() {
-                    tracing::warn!("apply chat template failed {:?}", e);
+                    tracing::warn!(
+                        arch = %self.name,
+                        error = %e,
+                        "Template render failed"
+                    );
                 }
-                //no chat template exists? using the built-in template
-                let system_prompt = self
-                    .system_message
-                    .as_ref()
-                    .map_or("".to_string(), |msg| format!("<|system|>\n {msg}"));
+            }
+        }
 
-                match self.sep_style {
-                    SeparatorStyle::AddColonSingle
-                    | SeparatorStyle::AddColonSpaceSingle
-                    | SeparatorStyle::AddNewLineSingle => {
-                        let mut accum = system_prompt + &self.sep;
-                        for message in &self.messages {
-                            accum +=
-                                &format!("{}: {}{}", message.role, message.content_str(), self.sep);
-                        }
-                        accum
-                    }
+        // Step 3: Try fallback registry
+        if let Some(fallback) = super::template_registry::get_fallback_template(&self.name) {
+            tracing::info!(
+                arch = %self.name,
+                "Using fallback template from registry"
+            );
+            let original = self.chat_template.clone();
+            self.chat_template = Some(fallback.to_string());
+            let result = self.apply_chat_template(true, thinking, tools);
+            self.chat_template = original;
 
-                    SeparatorStyle::AddColonTwo => {
-                        let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                        let mut accum = system_prompt + &self.sep;
-                        for (i, message) in self.messages.iter().enumerate() {
-                            accum += &format!(
-                                "{}: {}{}",
-                                message.role,
-                                message.content_str(),
-                                seps[i % 2]
-                            );
-                        }
-                        accum
-                    }
+            if let Ok(prompt) = result {
+                if !prompt.trim().is_empty() {
+                    return prompt;
+                }
+            }
+            tracing::warn!(
+                arch = %self.name,
+                "Fallback template also failed — using built-in separator style"
+            );
+        }
 
-                    SeparatorStyle::NoColonSingle => {
-                        let mut accum = system_prompt.clone();
-                        for message in &self.messages {
-                            accum +=
-                                &format!("{}: {}{}", message.role, message.content_str(), self.sep);
-                        }
-                        accum
-                    }
+        // Step 4: Built-in separator style (last resort)
+        tracing::warn!(
+            arch = %self.name,
+            sep_style = ?self.sep_style,
+            "Using built-in separator style as last resort"
+        );
+        let system_prompt = self
+            .system_message
+            .as_ref()
+            .map_or("".to_string(), |msg| format!("<|system|>\n {msg}"));
 
-                    SeparatorStyle::NoColonTwo => {
-                        let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                        let mut accum = system_prompt.clone();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            accum += &format!(
-                                "{}: {}{}",
-                                message.role,
-                                message.content_str(),
-                                seps[i % 2]
-                            );
-                        }
-                        accum
-                    }
+        match self.sep_style {
+            SeparatorStyle::AddColonSingle
+            | SeparatorStyle::AddColonSpaceSingle
+            | SeparatorStyle::AddNewLineSingle => {
+                let mut accum = system_prompt + &self.sep;
+                for message in &self.messages {
+                    accum +=
+                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                }
+                accum
+            }
 
-                    SeparatorStyle::RWKV => {
-                        let mut accum = system_prompt.clone() + &self.sep;
-                        for message in &self.messages {
-                            accum += &format!(
-                                "{}: {}\n\n",
-                                message.role,
-                                message
-                                    .content_str()
-                                    .replace("\r\n", "\n")
-                                    .replace("\n\n", "\n")
-                            );
-                        }
-                        accum
-                    }
+            SeparatorStyle::AddColonTwo => {
+                let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
+                let mut accum = system_prompt + &self.sep;
+                for (i, message) in self.messages.iter().enumerate() {
+                    accum += &format!(
+                        "{}: {}{}",
+                        message.role,
+                        message.content_str(),
+                        seps[i % 2]
+                    );
+                }
+                accum
+            }
 
-                    SeparatorStyle::Llama | SeparatorStyle::Mistral => {
-                        let mut accum = "".to_string();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            if message.role.clone() == self.roles.0 {
-                                accum += &format!("[INST] {} [/INST]", message.content_str());
-                            } else if message.role.clone() == self.roles.1 {
-                                //assistant message
-                                accum += &format!("{} \n", message.content_str());
-                            } else if i == 0 && !system_prompt.is_empty() {
-                                accum += &system_prompt;
-                            }
-                        }
-                        accum
-                    }
+            SeparatorStyle::NoColonSingle => {
+                let mut accum = system_prompt.clone();
+                for message in &self.messages {
+                    accum +=
+                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                }
+                accum
+            }
 
-                    SeparatorStyle::Llama3 => {
-                        let mut accum = "<|begin_of_text|>".to_string();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            if message.role.clone() == self.roles.0 {
-                                //user message
-                                accum += &format!(
-                                    "<|start_header_id|>user<|end_header_id|>\n\n {} <|eot_id|>",
-                                    message.content_str()
-                                );
-                            } else if message.role.clone() == self.roles.1 {
-                                //assistant message
-                                accum += &format!("<|start_header_id|>assistant<|end_header_id|>\n\n {} <|eot_id|>", message.content_str());
-                            } else if i == 0 && !system_prompt.is_empty() {
-                                accum += &system_prompt;
-                            }
-                        }
-                        accum
-                    }
+            SeparatorStyle::NoColonTwo => {
+                let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
+                let mut accum = system_prompt.clone();
+                for (i, message) in self.messages.iter().enumerate() {
+                    accum += &format!(
+                        "{}: {}{}",
+                        message.role,
+                        message.content_str(),
+                        seps[i % 2]
+                    );
+                }
+                accum
+            }
 
-                    SeparatorStyle::Phi => {
-                        let mut accum = "".to_string();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            if message.role.clone() == self.roles.0 {
-                                //user message
-                                accum += &format!("<|user|> {}<|end|>", message.content_str());
-                            } else if message.role.clone() == self.roles.1 {
-                                //assistant message
-                                accum += &format!("<|assistant|>{}<|end|>", message.content_str());
-                            } else if i == 0 && !system_prompt.is_empty() {
-                                accum += &system_prompt;
-                            }
-                        }
-                        accum
-                    }
+            SeparatorStyle::RWKV => {
+                let mut accum = system_prompt.clone() + &self.sep;
+                for message in &self.messages {
+                    accum += &format!(
+                        "{}: {}\n\n",
+                        message.role,
+                        message
+                            .content_str()
+                            .replace("\r\n", "\n")
+                            .replace("\n\n", "\n")
+                    );
+                }
+                accum
+            }
 
-                    SeparatorStyle::Qwen | SeparatorStyle::Yi => {
-                        let mut accum = "".to_string();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            if message.role.clone() == self.roles.0 {
-                                //user message
-                                accum += &format!(
-                                    "<|im_start|>user\n {} <|im_end|>",
-                                    message.content_str()
-                                );
-                            } else if message.role.clone() == self.roles.1 {
-                                //assistant message
-                                accum += &format!(
-                                    "<|im_start|>assistant\n {} <|im_end|>",
-                                    message.content_str()
-                                );
-                            } else if i == 0 && !system_prompt.is_empty() {
-                                accum += &system_prompt;
-                            }
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::Gemma => {
-                        let mut accum = "".to_string();
-                        for message in self.messages.iter() {
-                            accum += &format!(
-                                "<bos><start_of_turn>{}\n {} <end_of_turn>\n",
-                                message.role,
-                                message.content_str()
-                            );
-                        }
-                        accum += "<start_of_turn>model\n";
-                        accum
-                    }
-
-                    SeparatorStyle::StableLM => {
-                        let mut accum = "".to_string();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            if message.role.clone() == self.roles.0 {
-                                //user message
-                                accum += &format!(
-                                    "<|user|>user\n {}<|endoftext|>",
-                                    message.content_str()
-                                );
-                            } else if message.role.clone() == self.roles.1 {
-                                //assistant message
-                                accum += &format!(
-                                    "<|assistant|>\n {}<|endoftext|>",
-                                    message.content_str()
-                                );
-                            } else if i == 0 && !system_prompt.is_empty() {
-                                accum += &system_prompt;
-                            }
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::ChatGLM => {
-                        let round_add_n = if self.name == "chatglm2" { 1 } else { 0 };
-
-                        let mut accum = if !system_prompt.is_empty() {
-                            system_prompt.clone()
-                        } else {
-                            "".to_string()
-                        };
-
-                        for (i, message) in self.messages.iter().enumerate() {
-                            if i % 2 == 0 {
-                                accum += &format!("[Round {}]{}", i / 2 + round_add_n, self.sep);
-                            }
-                            accum +=
-                                &format!("{}: {}{}", message.role, message.content_str(), self.sep);
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::ChatML => {
-                        let mut accum = if !system_prompt.is_empty() {
-                            format!("{}{}\n", system_prompt, self.sep)
-                        } else {
-                            "".to_string()
-                        };
-                        for message in &self.messages {
-                            accum += &format!(
-                                "{}\n{}{}\n",
-                                message.role,
-                                message.content_str(),
-                                self.sep
-                            );
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::ChatIntern => {
-                        let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                        let mut accum = system_prompt.clone();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            if i % 2 == 0 {
-                                accum += "<s>";
-                            }
-                            accum += &format!(
-                                "{}:{}{}\n",
-                                message.role,
-                                message.content_str(),
-                                seps[i % 2]
-                            );
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::Dolly => {
-                        let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                        let mut accum = system_prompt.clone();
-                        for (i, message) in self.messages.iter().enumerate() {
-                            accum += &format!(
-                                "{}:\n{}{}",
-                                message.role,
-                                message.content_str(),
-                                seps[i % 2]
-                            );
-                            if i % 2 == 1 {
-                                accum += "\n\n";
-                            }
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::Phoenix => {
-                        let mut accum = system_prompt.clone() + &self.sep;
-                        for message in &self.messages {
-                            accum += &format!("{}: <s>{}</s>", message.role, message.content_str());
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::Robin => {
-                        let mut accum = system_prompt.clone() + &self.sep;
-                        for message in &self.messages {
-                            accum += &format!(
-                                "{}:\n{}{}",
-                                message.role,
-                                message.content_str(),
-                                self.sep
-                            );
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::FalconChat => {
-                        let mut accum = "".to_string();
-                        if !system_prompt.is_empty() {
-                            accum += &format!("{}{}", system_prompt, self.sep)
-                        }
-                        for message in &self.messages {
-                            accum +=
-                                &format!("{}: {}{}", message.role, message.content_str(), self.sep);
-                        }
-                        accum
-                    }
-
-                    SeparatorStyle::GLM => {
-                        let mut accum = "[gMASK]<sop>".to_string();
-                        accum += &system_prompt.clone();
-                        for message in self.messages.iter() {
-                            if message.role.clone() == self.roles.0 {
-                                //user message
-                                accum += &format!("<|user|>\n {}", message.content_str());
-                            } else if message.role.clone() == self.roles.1 {
-                                //assistant message
-                                accum += &format!("<|assistant|>\n {}", message.content_str());
-                            }
-                        }
-                        accum
+            SeparatorStyle::Llama | SeparatorStyle::Mistral => {
+                let mut accum = "".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    if message.role.clone() == self.roles.0 {
+                        accum += &format!("[INST] {} [/INST]", message.content_str());
+                    } else if message.role.clone() == self.roles.1 {
+                        //assistant message
+                        accum += &format!("{} \n", message.content_str());
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
                     }
                 }
+                accum
+            }
+
+            SeparatorStyle::Llama3 => {
+                let mut accum = "<|begin_of_text|>".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    if message.role.clone() == self.roles.0 {
+                        //user message
+                        accum += &format!(
+                            "<|start_header_id|>user<|end_header_id|>\n\n {} <|eot_id|>",
+                            message.content_str()
+                        );
+                    } else if message.role.clone() == self.roles.1 {
+                        //assistant message
+                        accum += &format!("<|start_header_id|>assistant<|end_header_id|>\n\n {} <|eot_id|>", message.content_str());
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::Phi => {
+                let mut accum = "".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    if message.role.clone() == self.roles.0 {
+                        //user message
+                        accum += &format!("<|user|> {}<|end|>", message.content_str());
+                    } else if message.role.clone() == self.roles.1 {
+                        //assistant message
+                        accum += &format!("<|assistant|>{}<|end|>", message.content_str());
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::Qwen | SeparatorStyle::Yi => {
+                let mut accum = "".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    if message.role.clone() == self.roles.0 {
+                        //user message
+                        accum += &format!(
+                            "<|im_start|>user\n {} <|im_end|>",
+                            message.content_str()
+                        );
+                    } else if message.role.clone() == self.roles.1 {
+                        //assistant message
+                        accum += &format!(
+                            "<|im_start|>assistant\n {} <|im_end|>",
+                            message.content_str()
+                        );
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::Gemma => {
+                let mut accum = "".to_string();
+                for message in self.messages.iter() {
+                    accum += &format!(
+                        "<bos><start_of_turn>{}\n {} <end_of_turn>\n",
+                        message.role,
+                        message.content_str()
+                    );
+                }
+                accum += "<start_of_turn>model\n";
+                accum
+            }
+
+            SeparatorStyle::StableLM => {
+                let mut accum = "".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    if message.role.clone() == self.roles.0 {
+                        //user message
+                        accum += &format!(
+                            "<|user|>user\n {}<|endoftext|>",
+                            message.content_str()
+                        );
+                    } else if message.role.clone() == self.roles.1 {
+                        //assistant message
+                        accum += &format!(
+                            "<|assistant|>\n {}<|endoftext|>",
+                            message.content_str()
+                        );
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::ChatGLM => {
+                let round_add_n = if self.name == "chatglm2" { 1 } else { 0 };
+
+                let mut accum = if !system_prompt.is_empty() {
+                    system_prompt.clone()
+                } else {
+                    "".to_string()
+                };
+
+                for (i, message) in self.messages.iter().enumerate() {
+                    if i % 2 == 0 {
+                        accum += &format!("[Round {}]{}", i / 2 + round_add_n, self.sep);
+                    }
+                    accum +=
+                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                }
+                accum
+            }
+
+            SeparatorStyle::ChatML => {
+                let mut accum = if !system_prompt.is_empty() {
+                    format!("{}{}\n", system_prompt, self.sep)
+                } else {
+                    "".to_string()
+                };
+                for message in &self.messages {
+                    accum += &format!(
+                        "{}\n{}{}\n",
+                        message.role,
+                        message.content_str(),
+                        self.sep
+                    );
+                }
+                accum
+            }
+
+            SeparatorStyle::ChatIntern => {
+                let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
+                let mut accum = system_prompt.clone();
+                for (i, message) in self.messages.iter().enumerate() {
+                    if i % 2 == 0 {
+                        accum += "<s>";
+                    }
+                    accum += &format!(
+                        "{}:{}{}\n",
+                        message.role,
+                        message.content_str(),
+                        seps[i % 2]
+                    );
+                }
+                accum
+            }
+
+            SeparatorStyle::Dolly => {
+                let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
+                let mut accum = system_prompt.clone();
+                for (i, message) in self.messages.iter().enumerate() {
+                    accum += &format!(
+                        "{}:\n{}{}",
+                        message.role,
+                        message.content_str(),
+                        seps[i % 2]
+                    );
+                    if i % 2 == 1 {
+                        accum += "\n\n";
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::Phoenix => {
+                let mut accum = system_prompt.clone() + &self.sep;
+                for message in &self.messages {
+                    accum += &format!("{}: <s>{}</s>", message.role, message.content_str());
+                }
+                accum
+            }
+
+            SeparatorStyle::Robin => {
+                let mut accum = system_prompt.clone() + &self.sep;
+                for message in &self.messages {
+                    accum += &format!(
+                        "{}:\n{}{}",
+                        message.role,
+                        message.content_str(),
+                        self.sep
+                    );
+                }
+                accum
+            }
+
+            SeparatorStyle::FalconChat => {
+                let mut accum = "".to_string();
+                if !system_prompt.is_empty() {
+                    accum += &format!("{}{}", system_prompt, self.sep)
+                }
+                for message in &self.messages {
+                    accum +=
+                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                }
+                accum
+            }
+
+            SeparatorStyle::GLM => {
+                let mut accum = "[gMASK]<sop>".to_string();
+                accum += &system_prompt.clone();
+                for message in self.messages.iter() {
+                    if message.role.clone() == self.roles.0 {
+                        //user message
+                        accum += &format!("<|user|>\n {}", message.content_str());
+                    } else if message.role.clone() == self.roles.1 {
+                        //assistant message
+                        accum += &format!("<|assistant|>\n {}", message.content_str());
+                    }
+                }
+                accum
             }
         }
     }

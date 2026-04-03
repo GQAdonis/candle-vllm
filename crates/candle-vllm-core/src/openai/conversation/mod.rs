@@ -1,4 +1,6 @@
 pub mod default_conversation;
+pub mod template_registry;
+pub mod template_sanitizer;
 use serde::Serialize;
 
 use crate::openai::requests::{Tool, ToolCall};
