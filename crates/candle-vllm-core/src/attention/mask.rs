@@ -7,8 +7,6 @@ use candle_core::{DType, Result, Tensor};
 #[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
-#[cfg(feature = "metal")]
-use candle_vllm_metal_kernels as metal_kernels;
 
 #[derive(Debug, Clone)]
 struct CausalMask {
@@ -105,13 +103,13 @@ impl candle::InplaceOp1 for CausalMask {
 
         let dev = input.device();
 
-        let command_buffer = dev.command_buffer()?;
-        command_buffer.set_label("causal-mask");
+        let encoder = dev.command_encoder()?;
+        encoder.set_label("causal-mask");
 
         candle_vllm_metal_kernels::call_causal_mask(
             dev.device(),
-            &command_buffer,
-            candle_vllm_metal_kernels::Kernels::default(),
+            &encoder,
+            &candle_vllm_metal_kernels::Kernels::default(),
             internal_type,
             input.buffer(),
             tgt_len as i32,

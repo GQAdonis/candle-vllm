@@ -1,13 +1,15 @@
 use candle_core::{DType, MetalStorage};
-use candle_metal_kernels::metal::{Buffer, ComputePipeline, ConstantValues, Device, Function, Library, Value};
+use candle_metal_kernels::metal::{
+    Buffer, ComputePipeline, ConstantValues, Device, Function, Library, Value,
+};
 use objc2_metal::MTLSize;
 type NSUInteger = usize;
 use once_cell::sync::OnceCell;
-use std::sync::{OnceLock, RwLock};
 use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 
-pub mod utils;
-use utils::EncoderProvider;
+use crate::set_params;
+use crate::utils::{self, EncoderProvider};
 
 #[derive(Debug)]
 pub enum PagedAttentionDType {
@@ -71,8 +73,8 @@ impl Kernels {
         if let Some(lib) = LIBRARY.get() {
             Ok(lib.clone())
         } else {
-            use objc2_metal::MTLDevice;
             use dispatch2::DispatchData;
+            use objc2_metal::MTLDevice;
 
             let source_data = KERNELS;
 
@@ -80,11 +82,14 @@ impl Kernels {
             let data = DispatchData::from_bytes(source_data);
 
             // Load library from data using Metal API
-            let lib_obj = device.as_ref()
+            let lib_obj = device
+                .as_ref()
                 .newLibraryWithData_error(&data)
-                .map_err(|e| MetalKernelError::LoadLibraryError(format!(
+                .map_err(|e| {
+                    MetalKernelError::LoadLibraryError(format!(
                     "Metal requires macosx > 13.0 or higher, cannot load candle metal library: {e}"
-                )))?;
+                ))
+                })?;
 
             let lib = Library::new(lib_obj);
             Ok(LIBRARY.get_or_init(|| lib).clone())
@@ -119,7 +124,8 @@ impl Kernels {
 
         // Not in cache, need to create it
         let func = self.load_function(device, name.clone(), key.1.as_ref())?;
-        let pipeline = device.new_compute_pipeline_state_with_function(&func)
+        let pipeline = device
+            .new_compute_pipeline_state_with_function(&func)
             .map_err(|e| MetalKernelError::FailedToCreatePipeline(e.to_string()))?;
         pipelines.insert(key, pipeline.clone());
         Ok(pipeline)
@@ -165,7 +171,7 @@ pub fn call_copy_blocks(
     };
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -244,7 +250,7 @@ pub fn call_reshape_and_cache(
     };
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -362,7 +368,7 @@ pub fn paged_attention_v1(
 
     let pipeline = kernels.load_pipeline_with_constants(device, name, constants)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     // TODO: Re-enable when thread_execution_width is available on ComputePipeline
@@ -500,7 +506,7 @@ pub fn paged_attention_v2(
         let pipeline = kernels.load_pipeline_with_constants(device, name, constants)?;
 
         let encoder = ep.encoder();
-        
+
         encoder.set_compute_pipeline_state(&pipeline);
 
         // TODO: Re-enable when thread_execution_width is available on ComputePipeline
@@ -588,7 +594,7 @@ pub fn paged_attention_v2(
         let pipeline = kernels.load_pipeline(device, name)?;
 
         let encoder = ep.encoder();
-        
+
         encoder.set_compute_pipeline_state(&pipeline);
 
         // TODO: Re-enable when thread_execution_width is available on ComputePipeline
@@ -730,7 +736,7 @@ pub fn paged_attention_prefill(
     // 2. Load the pipeline. The prefill kernel does not use function constants.
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     // NOTE: Unlike the v1 kernel, the chunked prefill kernel is designed to use
@@ -818,7 +824,7 @@ pub fn call_causal_mask(
 
     // Get the encoder and cast it to the appropriate type
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     // Set the parameters for the kernel
@@ -873,7 +879,7 @@ pub fn call_update_scales_per_head(
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
 
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -966,7 +972,7 @@ pub fn call_fused_rope(
 
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -1056,7 +1062,7 @@ pub fn call_fp8_matmul(
     };
     let pipeline = kernels.load_pipeline(device, name.to_string())?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
 
     set_params!(
@@ -1174,7 +1180,7 @@ pub fn call_gdn_causal_conv1d_fwd(
     let name = gdn_conv_kernel_name("gdn_causal_conv1d_fwd", ty, kernel_size)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(weight), weight_offset as NSUInteger);
@@ -1227,7 +1233,7 @@ pub fn call_gdn_causal_conv1d_update(
     let name = gdn_conv_kernel_name("gdn_causal_conv1d_update", ty, kernel_size)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(weight), weight_offset as NSUInteger);
@@ -1281,7 +1287,7 @@ pub fn call_gdn_causal_conv1d_update_slots(
     let name = gdn_conv_kernel_name("gdn_causal_conv1d_update_slots", ty, kernel_size)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(weight), weight_offset as NSUInteger);
@@ -1347,7 +1353,7 @@ pub fn call_gdn_fused_gating(
     };
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1394,7 +1400,7 @@ pub fn call_gdn_l2_norm_last_dim(
     let name = format!("gdn_l2_norm_last_dim_{}", gdn_type_name(ty)?);
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1458,7 +1464,7 @@ pub fn call_gdn_gated_rmsnorm_silu_mul(
     };
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     encoder.set_buffer(0, Some(x), x_offset as NSUInteger);
     encoder.set_buffer(1, Some(z), z_offset as NSUInteger);
@@ -1519,7 +1525,7 @@ pub fn call_gdn_gated_delta_rule_recurrence(
     let name = gdn_recurrence_kernel_name("gdn_gated_delta_rule_recurrence", ty, k_dim)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1581,7 +1587,7 @@ pub fn call_gdn_gated_delta_rule_decode_slots(
     let name = gdn_recurrence_kernel_name("gdn_gated_delta_rule_decode_slots", ty, k_dim)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1647,7 +1653,7 @@ pub fn call_gdn_gated_delta_rule_recurrence_varlen(
     let name = gdn_recurrence_kernel_name("gdn_gated_delta_rule_recurrence_varlen", ty, k_dim)?;
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,
@@ -1702,7 +1708,7 @@ pub fn call_gdn_mamba_scatter_rows(
     let name = format!("gdn_mamba_scatter_rows_{}", gdn_type_name(ty)?);
     let pipeline = kernels.load_pipeline(device, name)?;
     let encoder = ep.encoder();
-    
+
     encoder.set_compute_pipeline_state(&pipeline);
     set_params!(
         encoder,

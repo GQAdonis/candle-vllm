@@ -1,7 +1,7 @@
-#[allow(unused_imports)]
-use candle_core::{backend::BackendDevice, Device, Result, Storage, Tensor};
 #[cfg(feature = "cuda")]
 use candle_core::cuda_backend::cudarc::driver::DevicePtr;
+#[allow(unused_imports)]
+use candle_core::{backend::BackendDevice, Device, Result, Storage, Tensor};
 use std::collections::HashMap;
 
 pub fn swap_blocks(
@@ -39,7 +39,8 @@ pub fn swap_blocks(
                 let cpu_num_blocks = src.dim(0)?;
                 let gpu_num_blocks = dst.dim(0)?;
                 let stream = dst_dev.cuda_stream();
-                let (dst_base_ptr, _guard): (u64, _) = dst_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
+                let (dst_base_ptr, _guard): (u64, _) =
+                    dst_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
                 let src_slice: &[T] = src_storage.as_slice()?;
 
                 for (src_block_number, dst_block_number) in block_mapping {
@@ -145,8 +146,10 @@ pub fn swap_blocks(
                 let local_num_blocks = dst.dim(0)?;
                 let src_stream = src_dev.cuda_stream();
                 let dst_stream = dst_dev.cuda_stream();
-                let (src_base_ptr, _src_guard): (u64, _) = src_storage.as_cuda_slice::<T>()?.device_ptr(&src_stream);
-                let (dst_base_ptr, _dst_guard): (u64, _) = dst_storage.as_cuda_slice::<T>()?.device_ptr(&dst_stream);
+                let (src_base_ptr, _src_guard): (u64, _) =
+                    src_storage.as_cuda_slice::<T>()?.device_ptr(&src_stream);
+                let (dst_base_ptr, _dst_guard): (u64, _) =
+                    dst_storage.as_cuda_slice::<T>()?.device_ptr(&dst_stream);
 
                 for (src_block_number, dst_block_number) in block_mapping {
                     let src_offset_elem: usize = src_block_number * block_size_elements;
@@ -201,7 +204,6 @@ pub fn swap_blocks(
         dst: &Tensor,
         block_mapping: &HashMap<usize, usize>,
     ) -> Result<()> {
-        use metal::{self, MTLStorageMode};
         let block_size_elements = src.elem_count() / src.dim(0)?;
         let (src_storage, _) = src.storage_and_layout();
         let (dst_storage, _) = dst.storage_and_layout();
@@ -229,8 +231,6 @@ pub fn swap_blocks(
                         "Failed to get Metal buffer contents. Buffer might be device-private (not Shared or Managed)."
                     );
                 }
-                let is_managed = dst_buffer.storage_mode() == MTLStorageMode::Managed;
-
                 for (src_block_number, dst_block_number) in block_mapping {
                     let src_offset_elements = src_block_number * block_size_elements;
                     let dst_offset_elements = dst_block_number * block_size_elements;
@@ -253,14 +253,6 @@ pub fn swap_blocks(
                             dst_ptr_offset,
                             block_size_elements,
                         );
-                    }
-
-                    if is_managed {
-                        // If memory is Managed (not Shared), we must notify Metal of the CPU-side change.
-                        dst_buffer.did_modify_range(metal::NSRange {
-                            location: (dst_offset_elements * dtype_size) as u64,
-                            length: block_size_bytes as u64,
-                        });
                     }
                 }
                 // For Shared memory (default on Apple Silicon), no explicit sync is needed.
@@ -336,10 +328,7 @@ pub fn swap_blocks(
                 // This is the Metal equivalent of a D2D async copy.
                 // We use a Blit Command Encoder to schedule GPU-side copies.
 
-                // Use the *destination* device's command queue.
-                let command_queue = dst_dev.new_command_queue();
-                let command_buffer = command_queue.new_command_buffer();
-                let blit_encoder = command_buffer.new_blit_command_encoder();
+                let blit_encoder = dst_dev.blit_command_encoder()?;
 
                 for (src_block_number, dst_block_number) in block_mapping {
                     let src_offset_bytes =
@@ -348,25 +337,27 @@ pub fn swap_blocks(
                         (dst_block_number * block_size_elements * dtype_size) as u64;
 
                     // Bounds checks
-                    assert!(src_offset_bytes + block_size_bytes as u64 <= src_buffer.length());
-                    assert!(dst_offset_bytes + block_size_bytes as u64 <= dst_buffer.length());
+                    assert!(
+                        src_offset_bytes + block_size_bytes as u64
+                            <= u64::try_from(src_buffer.length()).unwrap()
+                    );
+                    assert!(
+                        dst_offset_bytes + block_size_bytes as u64
+                            <= u64::try_from(dst_buffer.length()).unwrap()
+                    );
 
                     // Schedule the GPU-side copy
                     blit_encoder.copy_from_buffer(
                         src_buffer,
-                        src_offset_bytes,
+                        src_offset_bytes.try_into().unwrap(),
                         dst_buffer,
-                        dst_offset_bytes,
-                        block_size_bytes as u64,
+                        dst_offset_bytes.try_into().unwrap(),
+                        block_size_bytes,
                     );
                 }
 
-                // Finish encoding and commit the commands to the GPU
                 blit_encoder.end_encoding();
-                command_buffer.commit();
-
-                // The CUDA code synchronizes, so we wait for the copy to complete.
-                command_buffer.wait_until_completed();
+                dst_dev.wait_until_completed()?;
 
                 Ok(())
             }
@@ -419,7 +410,8 @@ pub fn clear_blocks(cache: &Tensor, block_ids: &Vec<u32>) -> Result<()> {
 
         let num_blocks = cache.dim(0)?;
         let stream = dst_dev.cuda_stream();
-        let (cache_base_ptr, _guard): (u64, _) = cache_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
+        let (cache_base_ptr, _guard): (u64, _) =
+            cache_storage.as_cuda_slice::<T>()?.device_ptr(&stream);
 
         for block_number in block_ids {
             let blk_offset: usize = *block_number as usize * block_size_elements;
@@ -433,12 +425,8 @@ pub fn clear_blocks(cache: &Tensor, block_ids: &Vec<u32>) -> Result<()> {
             let blk_ptr = cache_base_ptr.wrapping_add(blk_offset as u64);
 
             unsafe {
-                result::memset_d8_sync(
-                    blk_ptr,
-                    0,
-                    block_size_elements * dtype_size,
-                )
-                .map_err(candle_core::Error::wrap)?
+                result::memset_d8_sync(blk_ptr, 0, block_size_elements * dtype_size)
+                    .map_err(candle_core::Error::wrap)?
             }
         }
 

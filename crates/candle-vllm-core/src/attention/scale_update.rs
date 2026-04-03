@@ -161,8 +161,8 @@ impl candle::InplaceOp2 for KvScaleUpdate {
             _ => candle::bail!("v_scales must be a metal tensor"),
         };
 
-        let command_buffer = dev.command_buffer()?;
-        command_buffer.set_label("update-scales");
+        let encoder = dev.command_encoder()?;
+        encoder.set_label("update-scales");
 
         let (num_tokens, num_heads, head_dim) = if let Ok((b, s, h, d)) = k_l.shape().dims4() {
             ((b * s) as i64, h as i32, d as i32)
@@ -172,8 +172,8 @@ impl candle::InplaceOp2 for KvScaleUpdate {
         };
         candle_vllm_metal_kernels::call_update_scales_per_head(
             dev.device(),
-            &command_buffer,
-            candle_vllm_metal_kernels::Kernels::default(),
+            &encoder,
+            &candle_vllm_metal_kernels::Kernels::default(),
             internal_type,
             k.buffer(),
             v.buffer(),

@@ -2,8 +2,6 @@
 use crate::attention::cuda_utils;
 #[cfg(feature = "cuda")]
 use crate::attention::kernels::ffi;
-#[cfg(feature = "metal")]
-use crate::metal_kernels;
 #[cfg(all(feature = "cuda", feature = "flashinfer"))]
 use candle_core::cuda_backend::cudarc::driver::CudaSlice;
 #[cfg(feature = "cuda")]
@@ -50,7 +48,10 @@ fn get_or_init_flashinfer_fp8_workspace(
 
         let ws = slot.as_ref().unwrap();
         let stream = dev.cuda_stream();
-        Ok((ws.buffer.device_ptr(&stream).0 as *mut std::ffi::c_void, ws.size))
+        Ok((
+            ws.buffer.device_ptr(&stream).0 as *mut std::ffi::c_void,
+            ws.size,
+        ))
     })
 }
 
@@ -246,12 +247,12 @@ pub fn fp8_matmul(
             };
             let output_offset = output_layout.start_offset() * output.dtype().size_in_bytes();
 
-            let command_buffer = dev.command_buffer()?;
+            let encoder = dev.command_encoder()?;
 
             candle_vllm_metal_kernels::call_fp8_matmul(
                 dev.device(),
-                &command_buffer,
-                candle_vllm_metal_kernels::Kernels::default(),
+                &encoder,
+                &candle_vllm_metal_kernels::Kernels::default(),
                 dtype,
                 input_slice.buffer(),
                 input_offset,
