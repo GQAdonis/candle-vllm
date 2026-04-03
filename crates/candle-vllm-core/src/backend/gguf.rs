@@ -362,6 +362,27 @@ pub fn get_gguf_info<R: std::io::Seek + std::io::Read>(
         model = props.model,
     );
 
+    // Diagnostic: verify special token encoding
+    {
+        let test_prompt = "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n";
+        match tokenizer.encode(test_prompt, false) {
+            Ok(encoding) => {
+                let ids = encoding.get_ids();
+                let tokens: Vec<_> = encoding.get_tokens().to_vec();
+                tracing::warn!(
+                    prompt = test_prompt,
+                    num_tokens = ids.len(),
+                    ids = ?&ids[..ids.len().min(20)],
+                    tokens = ?&tokens[..tokens.len().min(20)],
+                    "ChatML encode test"
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "ChatML encode test failed");
+            }
+        }
+    }
+
     let bos = match props.bos {
         Some(u) => Some(props.tokens[u as usize].clone()),
         _ => None,

@@ -551,9 +551,8 @@ impl GGUFQWen3_5 {
         );
         cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
 
-        // Qwen3.5 uses interleaved RoPE (mrope_interleaved=true),
-        // which maps to is_gpt_neox=false in candle's convention.
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, false)?);
+        // Match the non-quantized Qwen3.5 implementation (is_gpt_neox=true).
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
         // Resolve hybrid config to get layer types and GDN parameters
         let hybrid = resolve_qwen3_hybrid_config(&cfg);
