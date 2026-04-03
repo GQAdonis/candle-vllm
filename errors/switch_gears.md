@@ -1,0 +1,2 @@
+The 14B fits your hardware precisely.
+Ministral 3 14B can be deployed locally, fitting in less than 24GB of RAM/VRAM when quantized. Hugging Face At Q4_K_M the weights land around 8-9GB on your 4070 Ti, leaving 3-4GB of physical KV cache budget. With TurboQuant at 9.8x that becomes an effective ~35GB KV budget — you're running a 14B model with long-context capability on a 12GB card. On the L4 with 24GB you have even more headroom.
