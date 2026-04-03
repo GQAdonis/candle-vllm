@@ -246,7 +246,8 @@ impl PagedAttention {
                 candle::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
                 _ => candle::bail!("cu_query_lens must be a cuda tensor"),
             };
-            let cu_query_lens_view = cu_query_lens_slice.slice(cu_query_lens_layout.start_offset()..);
+            let cu_query_lens_view =
+                cu_query_lens_slice.slice(cu_query_lens_layout.start_offset()..);
             let num_query_seqs = cu_query_lens_layout.shape().dims1()?.saturating_sub(1);
             let (query_start_len_ptr, _cql_guard) = cu_query_lens_view.device_ptr(&cuda_stream);
 
@@ -577,8 +578,8 @@ impl PagedAttention {
 
         let elem_count = out_shape.elem_count();
 
-        let command_buffer = dev.command_buffer()?;
-        command_buffer.set_label("paged-attention");
+        let encoder = dev.command_encoder()?;
+        encoder.set_label("paged-attention");
 
         let out = dev.new_buffer(elem_count, dtype, "paged-attention-out")?;
 
@@ -596,8 +597,8 @@ impl PagedAttention {
 
             candle_vllm_metal_kernels::paged_attention_prefill(
                 dev.device(),
-                &command_buffer,
-                candle_vllm_metal_kernels::Kernels::default(),
+                &encoder,
+                &candle_vllm_metal_kernels::Kernels::default(),
                 internal_type,
                 &out,
                 q.buffer(),
@@ -635,8 +636,8 @@ impl PagedAttention {
         } else if use_v1 {
             candle_vllm_metal_kernels::paged_attention_v1(
                 dev.device(),
-                &command_buffer,
-                candle_vllm_metal_kernels::Kernels::default(),
+                &encoder,
+                &candle_vllm_metal_kernels::Kernels::default(),
                 internal_type,
                 q.buffer(),
                 q_l.start_offset() * q.dtype().size_in_bytes(),
@@ -684,8 +685,8 @@ impl PagedAttention {
 
             candle_vllm_metal_kernels::paged_attention_v2(
                 dev.device(),
-                &command_buffer,
-                candle_vllm_metal_kernels::Kernels::default(),
+                &encoder,
+                &candle_vllm_metal_kernels::Kernels::default(),
                 internal_type,
                 &exp_sums,
                 &max_logits,
@@ -1221,13 +1222,13 @@ impl ReshapeCache {
 
         let dev = k.device();
 
-        let command_buffer = dev.command_buffer()?;
-        command_buffer.set_label("reshape-and-cache");
+        let encoder = dev.command_encoder()?;
+        encoder.set_label("reshape-and-cache");
 
         candle_vllm_metal_kernels::call_reshape_and_cache(
             dev.device(),
-            &command_buffer,
-            candle_vllm_metal_kernels::Kernels::default(),
+            &encoder,
+            &candle_vllm_metal_kernels::Kernels::default(),
             internal_type,
             k.buffer(),
             k_l.start_offset() * k.dtype().size_in_bytes(),

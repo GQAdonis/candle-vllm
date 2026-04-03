@@ -5,16 +5,14 @@
 use candle_core as candle;
 #[cfg(feature = "metal")]
 use candle_core::backend::BackendStorage;
-use candle_core::{DType, Result, Tensor};
 #[cfg(any(feature = "cuda", feature = "metal"))]
-use candle_core::{Device, Storage};
-#[cfg(feature = "cuda")]
-use half::{bf16, f16};
+use candle_core::Storage;
+use candle_core::{DType, Result, Tensor};
 #[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
-#[cfg(feature = "metal")]
-use candle_vllm_metal_kernels as metal_kernels;
+#[cfg(feature = "cuda")]
+use half::{bf16, f16};
 #[cfg(feature = "cuda")]
 use std::ffi::{c_int, c_void};
 
@@ -192,12 +190,12 @@ pub fn causal_conv1d_fwd(
     let cu_m = get_metal_slice_with_dtype_size(&cu_u32, std::mem::size_of::<u32>())?;
 
     let dev = x_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-causal-conv1d-fwd");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-causal-conv1d-fwd");
     candle_vllm_metal_kernels::call_gdn_causal_conv1d_fwd(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         x_c.dtype(),
         x_m.storage.buffer(),
         x_m.offset_in_bytes,
@@ -256,12 +254,12 @@ pub fn causal_conv1d_update(
     let out_m = get_metal_slice(&out)?;
 
     let dev = x_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-causal-conv1d-update");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-causal-conv1d-update");
     candle_vllm_metal_kernels::call_gdn_causal_conv1d_update(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         x_c.dtype(),
         x_m.storage.buffer(),
         x_m.offset_in_bytes,
@@ -331,12 +329,12 @@ pub fn causal_conv1d_update_slots(
     let out_m = get_metal_slice(&out)?;
 
     let dev = x_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-causal-conv1d-update-slots");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-causal-conv1d-update-slots");
     candle_vllm_metal_kernels::call_gdn_causal_conv1d_update_slots(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         x_c.dtype(),
         x_m.storage.buffer(),
         x_m.offset_in_bytes,
@@ -413,12 +411,12 @@ pub fn fused_gdn_gating(
     let g_m = get_metal_slice(&g)?;
     let beta_m = get_metal_slice(&beta)?;
     let dev = a_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-fused-gating");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-fused-gating");
     candle_vllm_metal_kernels::call_gdn_fused_gating(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         a_c.dtype(),
         a_log_c.dtype(),
         a_log_m.storage.buffer(),
@@ -514,12 +512,12 @@ pub fn gated_rmsnorm_silu_mul(
     let b_m = norm_bias_c.as_ref().map(get_metal_slice).transpose()?;
     let out_m = get_metal_slice(&out)?;
     let dev = x_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-gated-rmsnorm-silu-mul");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-gated-rmsnorm-silu-mul");
     candle_vllm_metal_kernels::call_gdn_gated_rmsnorm_silu_mul(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         x_c.dtype(),
         norm_weight_c.dtype(),
         x_m.storage.buffer(),
@@ -559,12 +557,12 @@ pub fn l2_norm_last_dim(input: &Tensor, eps: f64) -> Result<Tensor> {
     let in_m = get_metal_slice(&input_c)?;
     let out_m = get_metal_slice(&output)?;
     let dev = in_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-l2-norm-last-dim");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-l2-norm-last-dim");
     candle_vllm_metal_kernels::call_gdn_l2_norm_last_dim(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         input_c.dtype(),
         in_m.storage.buffer(),
         in_m.offset_in_bytes,
@@ -618,12 +616,12 @@ pub fn gated_delta_rule_recurrence(
     let state_m = get_metal_slice(state)?;
     let out_m = get_metal_slice(&out)?;
     let dev = q_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-recurrence");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-recurrence");
     candle_vllm_metal_kernels::call_gdn_gated_delta_rule_recurrence(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         q_c.dtype(),
         q_m.storage.buffer(),
         q_m.offset_in_bytes,
@@ -687,12 +685,12 @@ pub fn gated_delta_rule_decode_slots(
     let slots_m = get_metal_slice_with_dtype_size(&slots_c, std::mem::size_of::<i64>())?;
     let out_m = get_metal_slice(&out)?;
     let dev = q_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-decode-slots");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-decode-slots");
     candle_vllm_metal_kernels::call_gdn_gated_delta_rule_decode_slots(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         q_c.dtype(),
         q_m.storage.buffer(),
         q_m.offset_in_bytes,
@@ -767,12 +765,12 @@ pub fn gated_delta_rule_recurrence_varlen(
     let out_m = get_metal_slice(&out)?;
     let cu_m = get_metal_slice_with_dtype_size(&cu_u32, std::mem::size_of::<u32>())?;
     let dev = q_m.storage.device();
-    let command_buffer = dev.command_buffer()?;
-    command_buffer.set_label("gdn-recurrence-varlen");
+    let encoder = dev.command_encoder()?;
+    encoder.set_label("gdn-recurrence-varlen");
     candle_vllm_metal_kernels::call_gdn_gated_delta_rule_recurrence_varlen(
         dev.device(),
-        &*command_buffer,
-        candle_vllm_metal_kernels::Kernels::default(),
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         q_c.dtype(),
         q_m.storage.buffer(),
         q_m.offset_in_bytes,

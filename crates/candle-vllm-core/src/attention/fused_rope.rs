@@ -207,13 +207,12 @@ fn launch_fused_rope_metal(
     };
 
     let device = q_metal.device();
-    let command_buffer = device.command_buffer()?;
-    let kernels = candle_vllm_metal_kernels::Kernels::default();
+    let encoder = device.command_encoder()?;
 
     candle_vllm_metal_kernels::call_fused_rope(
         device.device(),
-        &*command_buffer,
-        kernels,
+        &encoder,
+        &candle_vllm_metal_kernels::Kernels::default(),
         dtype,
         q_metal.buffer(),
         q_layout.start_offset() * dtype.size_in_bytes(),

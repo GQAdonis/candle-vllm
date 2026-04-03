@@ -32,6 +32,10 @@ fn compile(platform: Platform) -> Result<(), String> {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").map_err(|_| "OUT_DIR not set")?);
     let working_directory = out_dir.to_string_lossy().to_string();
     let sources = current_dir.join("src");
+    let module_cache = out_dir.join("clang-module-cache");
+    std::fs::create_dir_all(&module_cache)
+        .map_err(|e| format!("failed to create clang module cache dir: {e}"))?;
+    let module_cache_flag = format!("-fmodules-cache-path={}", module_cache.display());
 
     // Compile metal to air
     let mut compile_air_cmd = Command::new("xcrun");
@@ -40,6 +44,7 @@ fn compile(platform: Platform) -> Result<(), String> {
         .arg(platform.sdk())
         .arg("metal")
         .arg(format!("-working-directory={working_directory}"))
+        .arg(&module_cache_flag)
         .arg("-Wall")
         .arg("-Wextra")
         .arg("-O3")
@@ -49,12 +54,6 @@ fn compile(platform: Platform) -> Result<(), String> {
         compile_air_cmd.arg(sources.join(format!("{metal_file}.metal")));
     }
     // compile_air_cmd.arg(sources.join("metal_dtype.metal"));
-    compile_air_cmd
-        .spawn()
-        .expect("Failed to compile air")
-        .wait()
-        .expect("Failed to compile air");
-
     let mut child = compile_air_cmd.spawn().expect("Failed to compile air");
 
     match child.try_wait() {

@@ -2,7 +2,11 @@ use candle_core::MetalStorage;
 use candle_metal_kernels::metal::{Buffer, Commands, ComputeCommandEncoder};
 use std::ffi::c_void;
 
-pub fn set_param<P: EncoderParam, E: std::ops::Deref<Target = ComputeCommandEncoder>>(encoder: &E, position: usize, data: P) {
+pub fn set_param<P: EncoderParam, E: std::ops::Deref<Target = ComputeCommandEncoder>>(
+    encoder: &E,
+    position: usize,
+    data: P,
+) {
     <P as EncoderParam>::set_param(encoder, position, data)
 }
 
@@ -130,5 +134,16 @@ impl EncoderProvider for &Commands {
             inner: encoder,
             buffer: self,
         }
+    }
+}
+
+impl EncoderProvider for &ComputeCommandEncoder {
+    type Encoder<'a>
+        = &'a ComputeCommandEncoder
+    where
+        Self: 'a;
+
+    fn encoder(&self) -> Self::Encoder<'_> {
+        self
     }
 }

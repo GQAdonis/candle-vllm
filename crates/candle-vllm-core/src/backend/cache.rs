@@ -259,8 +259,8 @@ pub fn swap_blocks(
             let dst_stream = dst_dev.cuda_stream();
             let dst_cuda_slice = dst_storage.as_cuda_slice::<u8>()?;
             let (dst_base_ptr, _dg) = dst_cuda_slice.device_ptr(dst_stream.deref());
-            let dst_base_ptr = dst_base_ptr
-                + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
+            let dst_base_ptr =
+                dst_base_ptr + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
             let src_slice = src_storage.as_slice()?;
 
             for (src_block_number, dst_block_number) in block_mapping {
@@ -348,13 +348,13 @@ pub fn copy_blocks(
             unreachable!()
         };
 
-        let command_buffer = dev.command_buffer()?;
-        command_buffer.set_label("copy-blocks");
+        let encoder = dev.command_encoder()?;
+        encoder.set_label("copy-blocks");
 
         crate::attention::metal_kernels::call_copy_blocks(
             dev.device(),
-            &command_buffer,
-            crate::attention::metal_kernels::Kernels::default(),
+            &encoder,
+            &crate::attention::metal_kernels::Kernels::default(),
             key_cache.dtype(),
             key_storage.buffer(),
             key_offset * key_storage.dtype().size_in_bytes(),
@@ -404,21 +404,20 @@ pub fn swap_blocks(src: Tensor, dst: &Tensor, block_mapping: HashMap<usize, usiz
                 let dst_offset = dst_block_number * block_size_in_bytes
                     + dst_layout.start_offset() * dst_storage.dtype().size_in_bytes();
 
-                let command_buffer = src_dev.command_buffer()?;
-                command_buffer.set_label("swap-blocks-gpu-gpu");
-                let blit = command_buffer.new_blit_command_encoder();
+                let blit = src_dev.blit_command_encoder()?;
                 blit.set_label("swap-blocks-gpu-gpu");
                 let length = (src_layout.shape().elem_count() * src_storage.dtype().size_in_bytes())
                     as metal::NSUInteger;
                 blit.copy_from_buffer(
                     src_storage.buffer(),
-                    src_offset as u64,
+                    src_offset,
                     dst_storage.buffer(),
-                    dst_offset as u64,
-                    length,
+                    dst_offset,
+                    length as usize,
                 );
                 blit.end_encoding();
             }
+            src_dev.wait_until_completed()?;
         }
         (Device::Cpu, Device::Metal(dev)) => {
             let (src_storage, src_layout) = src.storage_and_layout();
@@ -451,21 +450,20 @@ pub fn swap_blocks(src: Tensor, dst: &Tensor, block_mapping: HashMap<usize, usiz
                         &src_slice[src_offset..src_offset + block_size_in_bytes],
                     )?;
 
-                    let command_buffer = dev.command_buffer()?;
-                    command_buffer.set_label("swap-blocks-cpu-gpu");
-                    let blit = command_buffer.new_blit_command_encoder();
+                    let blit = dev.blit_command_encoder()?;
                     blit.set_label("swap-blocks-cpu-gpu");
                     let length = (src_layout.shape().elem_count() * SRCT::DTYPE.size_in_bytes())
                         as metal::NSUInteger;
                     blit.copy_from_buffer(
                         &src_buffer,
-                        src_offset as u64,
+                        src_offset,
                         dst_storage.buffer(),
-                        dst_offset as u64,
-                        length,
+                        dst_offset,
+                        length as usize,
                     );
                     blit.end_encoding();
                 }
+                dev.wait_until_completed()?;
                 Ok(())
             }
 
