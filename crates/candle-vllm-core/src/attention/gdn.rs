@@ -7,7 +7,7 @@ use candle_core as candle;
 use candle_core::backend::BackendStorage;
 #[cfg(any(feature = "cuda", feature = "metal"))]
 use candle_core::Storage;
-use candle_core::{DType, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 #[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
