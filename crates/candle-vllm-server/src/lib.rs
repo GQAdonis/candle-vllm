@@ -1450,11 +1450,60 @@ or switching to a smaller model."
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // When CLI flags override the model, ensure the registry and default reflect
+    // what was actually loaded — not just what models.yaml declares.
+    let (effective_registry, effective_default) = {
+        let mut registry = loaded_registry.registry.clone().unwrap_or_default();
+        let mut default = loaded_registry.default_model.clone();
+
+        if let Some(ref cli_model) = startup_model_name {
+            // Derive a user-friendly name for the CLI-loaded model
+            let display_name = if registry.find(cli_model).is_some() {
+                // Model already in registry — just update the default
+                cli_model.clone()
+            } else {
+                // Synthesize a registry entry from CLI args
+                let friendly_name = cli_model
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(cli_model)
+                    .to_lowercase()
+                    .replace(' ', "-");
+                let alias = candle_vllm_openai::model_registry::ModelAlias {
+                    name: friendly_name.clone(),
+                    model_id: Some(cli_model.clone()),
+                    weight_path: args.weight_path.clone(),
+                    weight_file: args.weight_file.clone(),
+                    dtype: args.dtype.clone(),
+                    quantization: None,
+                    block_size: Some(args.block_size),
+                    max_num_seqs: Some(args.max_num_seqs),
+                    kvcache_mem_gpu: Some(args.kvcache_mem_gpu),
+                    kvcache_mem_cpu: Some(args.kvcache_mem_cpu),
+                    prefill_chunk_size: args.prefill_chunk_size,
+                    multithread: Some(args.multithread),
+                    device_ids: None,
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
+                    isq: args.isq.clone(),
+                };
+                registry.models.push(alias);
+                friendly_name
+            };
+            default = Some(display_name);
+        }
+
+        (Some(registry), default)
+    };
+
     let models = ModelsState::new(
-        loaded_registry.registry.clone(),
+        effective_registry,
         loaded_registry.validation.clone(),
         loaded_registry.idle_unload,
-        loaded_registry.default_model.clone(),
+        effective_default,
     );
 
     // Load MCP config: CLI arg > env var > ~/.candle-vllm/mcp.json > current dir
@@ -1666,9 +1715,19 @@ or switching to a smaller model."
     // Usage example: https://github.com/guoqingbao/rustchatui/blob/main/ReadMe.md
     if ui_server && global_rank == 0 {
         tasks.push(tokio::spawn(async move {
-            start_ui_server((ui_port - 1) as u16, Some(ui_port as u16), None, None)
-                .await
-                .unwrap();
+            let result = tokio::task::spawn(async move {
+                start_ui_server((ui_port - 1) as u16, Some(ui_port as u16), None, None).await
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("Web UI server exited with error (non-fatal): {e}. API server continues on port {ui_port}.");
+                }
+                Err(e) => {
+                    tracing::warn!("Web UI server panicked (non-fatal): {e}. API server continues on port {ui_port}.");
+                }
+            }
         }));
     }
 

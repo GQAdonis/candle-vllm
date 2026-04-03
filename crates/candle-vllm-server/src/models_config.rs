@@ -87,13 +87,30 @@ impl ModelsState {
     }
 
     pub fn resolve(&self, name: &str) -> Option<ModelAlias> {
+        let registry = self.registry.as_ref()?;
+
         // Handle "default" model name by resolving to default_model
         let resolved_name = if name == "default" {
             self.default_model.as_deref().unwrap_or(name)
         } else {
             name
         };
-        self.registry.as_ref()?.find(resolved_name)
+
+        // Try exact match first
+        if let Some(alias) = registry.find(resolved_name) {
+            return Some(alias);
+        }
+
+        // If the requested name isn't in the registry, fall back to the
+        // default/active model.  This handles the case where CLI flags loaded
+        // a model that clients don't know the canonical name of.
+        if let Some(default_name) = self.default_model.as_deref() {
+            if default_name != resolved_name {
+                return registry.find(default_name);
+            }
+        }
+
+        None
     }
 
     pub async fn set_active(&self, name: String) {

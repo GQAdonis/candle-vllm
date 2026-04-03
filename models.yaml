@@ -1,7 +1,7 @@
 idle_unload_secs: 3600  # 1 hour
 
 # Default model to use if no model is specified via CLI arguments
-default_model: llama-3.2-1b-instruct
+default_model: qwen3.5-9b-gguf
 
 # ============================================================================
 # Parking Lot Scheduler Configuration (Optimized for Performance)
@@ -40,6 +40,31 @@ parking_lot:
     retention_secs: 3600  # 1 hour
 
 models:
+  - name: qwen3.5-9b-gguf
+    hf_id: unsloth/Qwen3.5-9B-GGUF
+    weight_file: Qwen3.5-9B-Q4_K_M.gguf
+    params:
+      dtype: bf16
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      mem: 512
+      max_num_seqs: 16
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      prefill_chunk_size: 2048
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 4096
+        max_queue_depth: 50
+        timeout_secs: 300
+    notes: "Qwen3.5 9B GGUF (Q4_K_M) hybrid GatedDeltaNet/full attention with TurboQuant 3-bit KV cache"
+
   - name: mistral-3-ministral-3B-reasoning
     hf_id: mistralai/Ministral-3-3B-Reasoning-2512
     params:
