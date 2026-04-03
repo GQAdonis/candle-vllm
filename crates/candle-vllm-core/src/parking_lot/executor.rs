@@ -150,7 +150,7 @@ impl LlmExecutor {
         };
 
         // Create input metadata
-        let input_metadata = match job.to_input_metadata(device) {
+        let mut input_metadata = match job.to_input_metadata(device) {
             Ok(meta) => meta,
             Err(e) => {
                 error!(
@@ -162,6 +162,10 @@ impl LlmExecutor {
                 return InferenceResult::error(e.to_string());
             }
         };
+        // Hybrid models (GatedDeltaNet) need sequence IDs for mamba cache
+        if self.pipeline.requires_mamba_state() && input_metadata.sequence_ids.is_none() {
+            input_metadata.sequence_ids = Some(vec![job.request_id.as_bytes()[0] as usize]);
+        }
 
         // Initial forward pass
         let kv_tensors = match self.cache_engine.get_kv_tensors() {
@@ -314,9 +318,16 @@ impl LlmExecutor {
                         }
                     };
 
+                    // Hybrid models (GatedDeltaNet) need sequence IDs for mamba cache
+                    let mamba_seq_ids = if self.pipeline.requires_mamba_state() {
+                        Some(vec![job.request_id.as_bytes()[0] as usize])
+                    } else {
+                        None
+                    };
+
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true,
-                        sequence_ids: None,
+                        sequence_ids: mamba_seq_ids,
                         mamba_slot_mapping: None,
                         slot_mapping: match Tensor::zeros(seq_len, DType::I64, device) {
                             Ok(t) => t,
@@ -673,9 +684,16 @@ impl LlmExecutor {
                         }
                     };
 
+                    // Hybrid models (GatedDeltaNet) need sequence IDs for mamba cache
+                    let mamba_seq_ids = if pipeline.requires_mamba_state() {
+                        Some(vec![job.request_id.as_bytes()[0] as usize])
+                    } else {
+                        None
+                    };
+
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true,
-                        sequence_ids: None,
+                        sequence_ids: mamba_seq_ids,
                         mamba_slot_mapping: None,
                         slot_mapping: match Tensor::zeros(seq_len, DType::I64, device) {
                             Ok(t) => t,

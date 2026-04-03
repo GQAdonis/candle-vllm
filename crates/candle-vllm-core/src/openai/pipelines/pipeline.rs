@@ -1890,6 +1890,18 @@ impl DefaultPipeline {
             .map_err(|e| candle_core::Error::Msg(format!("Tokenizer decode error: {}", e)))
     }
 
+    /// Returns true if the loaded model uses hybrid attention (GatedDeltaNet + full)
+    /// and therefore requires sequence_ids / mamba_slot_mapping in InputMetadata.
+    pub fn requires_mamba_state(&self) -> bool {
+        matches!(
+            &self.model,
+            LLMModel::Qwen3_5(_)
+                | LLMModel::QWen3_5GGUF(_)
+                | LLMModel::Qwen3_5MoE(_)
+                | LLMModel::Qwen3VL(_)
+        )
+    }
+
     pub fn release_sequence_state(&self, sequence_id: usize) {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.release_sequence_state(sequence_id),

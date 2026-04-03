@@ -1,11 +1,11 @@
-use super::{attention::QuantizedAttention, rotary_emb::ScalingRotaryEmbedding, Config};
+use super::{rotary_emb::ScalingRotaryEmbedding, Config};
 use super::resolve_qwen3_hybrid_config;
 use crate::attention::mamba_cache::MambaCache;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::utils::{resolve_input_seqlens, resolve_mamba_seq_slots};
-use crate::InputMetadata;
+use crate::{InputMetadata, PagedAttention};
 #[cfg(any(feature = "cuda", feature = "metal"))]
 use crate::attention::gdn;
 use candle_core::quantized::{gguf_file, QMatMul};
@@ -28,6 +28,100 @@ impl Module for Mlp {
         let w3 = self.feed_forward_w3.forward(xs)?;
         self.feed_forward_w2
             .forward(&(candle_nn::ops::silu(&w1)? * w3)?)
+    }
+}
+
+struct QuantizedGatedAttention {
+    attention_wq: QMatMul,
+    attention_wk: QMatMul,
+    attention_wv: QMatMul,
+    attention_wo: QMatMul,
+    q_norm: QRmsNorm,
+    k_norm: QRmsNorm,
+    n_head: usize,
+    n_kv_head: usize,
+    head_dim: usize,
+    attn: PagedAttention,
+    rotary_emb: Arc<ScalingRotaryEmbedding>,
+    dtype: DType,
+}
+
+impl QuantizedGatedAttention {
+    fn forward(
+        &self,
+        x: &Tensor,
+        mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
+        cache: Option<(&Tensor, &Tensor)>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        let (seq_len, _) = x.dims2()?;
+
+        let q_full = self.attention_wq.forward(x)?;
+        let k = self.attention_wk.forward(x)?;
+        let v = self.attention_wv.forward(x)?;
+
+        // Split Q into query and gate (each num_heads * head_dim)
+        let local_q_dim = self.n_head * self.head_dim;
+        let q_gate = q_full.reshape((seq_len, self.n_head, self.head_dim * 2))?;
+        let query = q_gate.narrow(2, 0, self.head_dim)?;
+        let gate = q_gate.narrow(2, self.head_dim, self.head_dim)?;
+        let query = query.reshape((seq_len, local_q_dim))?;
+        let gate = gate.reshape((seq_len, local_q_dim))?;
+
+        // Reshape for attention
+        let q = query.reshape((seq_len, self.n_head, self.head_dim))?;
+        let k = k.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+        let v = v.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+
+        // Cast to F32 for Q/K norms (Qwen3.5 stores norm weights in F32)
+        let (q, k) = if q.dtype() != DType::F32 {
+            (q.to_dtype(DType::F32)?, k.to_dtype(DType::F32)?)
+        } else {
+            (q, k)
+        };
+
+        // Per-head RMSNorm
+        let q_flat = q.flatten(0, 1)?;
+        let k_flat = k.flatten(0, 1)?;
+        let q_flat = self.q_norm.forward(&q_flat)?;
+        let k_flat = self.k_norm.forward(&k_flat)?;
+        let q = q_flat.reshape((seq_len, self.n_head, self.head_dim))?;
+        let k = k_flat.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+
+        // Apply rotary embeddings
+        let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
+        let (q, k, v) = (
+            q.to_dtype(self.dtype)?,
+            k.to_dtype(self.dtype)?,
+            v.to_dtype(self.dtype)?,
+        );
+
+        // Paged attention
+        let y = self
+            .attn
+            .forward(
+                &q,
+                &k,
+                &v,
+                mask,
+                cache.map(|(k_, _)| k_.clone()),
+                cache.map(|(_, v_)| v_.clone()),
+                input_metadata,
+                None,
+            )?
+            .reshape((seq_len, ()))?;
+
+        // Apply gate: y * sigmoid(gate)
+        let gate = if gate.dtype() != y.dtype() {
+            gate.to_dtype(y.dtype())?
+        } else {
+            gate
+        };
+        let y = y.broadcast_mul(&candle_nn::ops::sigmoid(&gate)?)?;
+
+        // Output projection
+        self.attention_wo.forward(&y.to_dtype(x.dtype())?)
     }
 }
 
@@ -224,7 +318,7 @@ impl QuantizedGatedDeltaNet {
 }
 
 enum LayerType {
-    FullAttention(QuantizedAttention),
+    FullAttention(QuantizedGatedAttention),
     LinearAttention(QuantizedGatedDeltaNet),
 }
 
@@ -300,13 +394,15 @@ impl GGUFQWen3_5 {
     ) -> Config {
         // Compute linear attention head dimensions:
         // num_v_heads = ssm_time_step_rank, num_k_heads = ssm_group_count
-        // head_v_dim = ssm_state_size, head_k_dim = ssm_inner_size / ssm_group_count
-        let head_k_dim_linear = ssm_inner_size / ssm_group_count;
+        // head_v_dim = ssm_state_size
+        // ssm_inner_size = key_dim * 2 (Q and K share the same dimension)
+        // head_k_dim = (ssm_inner_size / 2) / ssm_group_count
+        let head_k_dim_linear = ssm_inner_size / 2 / ssm_group_count;
 
         let hybrid_json = serde_json::json!({
             "full_attention_interval": full_attention_interval,
             "conv_kernel_size": conv_kernel_size,
-            "linear_num_heads": ssm_group_count,
+            "linear_num_key_heads": ssm_group_count,
             "linear_num_value_heads": ssm_time_step_rank,
             "linear_key_head_dim": head_k_dim_linear,
             "linear_value_head_dim": ssm_state_size,
@@ -500,16 +596,42 @@ impl GGUFQWen3_5 {
                 ct.tensor(reader, &format!("{prefix}.post_attention_norm.weight"), device)?;
 
             let attn = if layer_type_str == "full_attention" {
-                LayerType::FullAttention(QuantizedAttention::new(
-                    &cfg,
-                    ct,
-                    reader,
-                    &prefix,
-                    device,
+                let attention_wq =
+                    ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
+                let attention_wk =
+                    ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
+                let attention_wv =
+                    ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
+                let attention_wo =
+                    ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
+                let q_norm_tensor =
+                    ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device)?;
+                let k_norm_tensor =
+                    ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device)?;
+
+                LayerType::FullAttention(QuantizedGatedAttention {
+                    attention_wq: QMatMul::from_qtensor(attention_wq)?,
+                    attention_wk: QMatMul::from_qtensor(attention_wk)?,
+                    attention_wv: QMatMul::from_qtensor(attention_wv)?,
+                    attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                    q_norm: QRmsNorm::from_qtensor(q_norm_tensor, rms_norm_eps)?,
+                    k_norm: QRmsNorm::from_qtensor(k_norm_tensor, rms_norm_eps)?,
+                    n_head: head_count,
+                    n_kv_head: head_count_kv,
+                    head_dim,
+                    attn: PagedAttention::new(
+                        head_count,
+                        head_dim,
+                        1. / ((head_dim as f32).sqrt()),
+                        Some(head_count_kv),
+                        cfg.sliding_window,
+                        device.clone(),
+                        None,
+                        cfg.fp8_kvcache.unwrap_or(false),
+                    )?,
+                    rotary_emb: rotary_emb.clone(),
                     dtype,
-                    rotary_emb.clone(),
-                    cfg.sliding_window,
-                )?)
+                })
             } else {
                 // Linear attention layer (QuantizedGatedDeltaNet)
                 let cur_gdn_idx = gdn_layer_idx;
@@ -531,12 +653,13 @@ impl GGUFQWen3_5 {
                     ct.tensor(reader, &format!("{prefix}.ssm_out.weight"), device)?,
                 )?;
 
-                // Dequantize small tensors needed for GDN kernels
-                // conv_weight from GGUF: [kernel_size, channels] -> need [channels, 1, kernel_size]
+                // Dequantize small tensors needed for GDN kernels.
+                // GGUF stores dims reversed, so candle reads [d_conv, kernel_size].
+                // We need [d_conv, 1, kernel_size] for the conv1d kernel.
                 let conv_weight_raw = ct
                     .tensor(reader, &format!("{prefix}.ssm_conv1d.weight"), device)?
                     .dequantize(device)?;
-                let conv_weight = conv_weight_raw.t()?.unsqueeze(1)?;
+                let conv_weight = conv_weight_raw.unsqueeze(1)?;
 
                 let a_log = ct
                     .tensor(reader, &format!("{prefix}.ssm_a"), device)?
