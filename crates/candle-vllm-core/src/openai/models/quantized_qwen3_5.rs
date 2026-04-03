@@ -57,9 +57,31 @@ impl QuantizedGatedAttention {
     ) -> Result<Tensor> {
         let (seq_len, _) = x.dims2()?;
 
+        {
+            let xf = x.flatten_all()?.to_dtype(DType::F32)?;
+            tracing::warn!(
+                x_min = xf.min(0)?.to_scalar::<f32>()?,
+                x_max = xf.max(0)?.to_scalar::<f32>()?,
+                x_shape = ?x.shape(),
+                x_dtype = ?x.dtype(),
+                "Full attention input"
+            );
+        }
+
         let q_full = self.attention_wq.forward(x)?;
         let k = self.attention_wk.forward(x)?;
         let v = self.attention_wv.forward(x)?;
+
+        {
+            let qf = q_full.flatten_all()?.to_dtype(DType::F32)?;
+            tracing::warn!(
+                q_full_min = qf.min(0)?.to_scalar::<f32>()?,
+                q_full_max = qf.max(0)?.to_scalar::<f32>()?,
+                q_full_shape = ?q_full.shape(),
+                q_full_dtype = ?q_full.dtype(),
+                "After Q projection"
+            );
+        }
 
         // Split Q into query and gate (each num_heads * head_dim)
         let local_q_dim = self.n_head * self.head_dim;
@@ -81,6 +103,18 @@ impl QuantizedGatedAttention {
             (q, k)
         };
 
+        {
+            let qf = q.flatten_all()?;
+            let kf = k.flatten_all()?;
+            tracing::warn!(
+                q_pre_norm_min = qf.min(0)?.to_scalar::<f32>()?,
+                q_pre_norm_max = qf.max(0)?.to_scalar::<f32>()?,
+                k_pre_norm_min = kf.min(0)?.to_scalar::<f32>()?,
+                k_pre_norm_max = kf.max(0)?.to_scalar::<f32>()?,
+                "Q/K before RMSNorm"
+            );
+        }
+
         // Per-head RMSNorm
         let q_flat = q.flatten(0, 1)?;
         let k_flat = k.flatten(0, 1)?;
@@ -88,6 +122,23 @@ impl QuantizedGatedAttention {
         let k_flat = self.k_norm.forward(&k_flat)?;
         let q = q_flat.reshape((seq_len, self.n_head, self.head_dim))?;
         let k = k_flat.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+
+        // Diagnostic: check Q/K before RoPE
+        {
+            let qf = q.flatten_all()?;
+            let kf = k.flatten_all()?;
+            let qmax = qf.max(0)?.to_scalar::<f32>()?;
+            let kmax = kf.max(0)?.to_scalar::<f32>()?;
+            let qmin = qf.min(0)?.to_scalar::<f32>()?;
+            let kmin = kf.min(0)?.to_scalar::<f32>()?;
+            tracing::warn!(
+                qmin, qmax, kmin, kmax,
+                q_dtype = ?q.dtype(), k_dtype = ?k.dtype(),
+                q_shape = ?q.shape(), k_shape = ?k.shape(),
+                pos_shape = ?input_positions.shape(), pos_dtype = ?input_positions.dtype(),
+                "Before RoPE"
+            );
+        }
 
         // Apply rotary embeddings
         let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
@@ -97,7 +148,21 @@ impl QuantizedGatedAttention {
             v.to_dtype(self.dtype)?,
         );
 
-        // Paged attention
+        {
+            let qf = q.flatten_all()?.to_dtype(DType::F32)?;
+            let kf = k.flatten_all()?.to_dtype(DType::F32)?;
+            let qmax = qf.max(0)?.to_scalar::<f32>()?;
+            let kmax = kf.max(0)?.to_scalar::<f32>()?;
+            if qmax.is_nan() || kmax.is_nan() || qmax.is_infinite() || kmax.is_infinite() {
+                tracing::error!(
+                    qmax, kmax,
+                    is_prefill = input_metadata.is_prefill,
+                    "NaN/Inf in Q or K after RoPE!"
+                );
+            }
+        }
+
+        // Paged attention with reshape_and_cache for KV cache
         let y = self
             .attn
             .forward(
@@ -343,9 +408,23 @@ impl DecoderLayer {
         input_metadata: &InputMetadata,
         mamba_cache: &mut MambaCache,
         seq_slots: &Tensor,
+        _model_dtype: DType,
     ) -> Result<Tensor> {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs)?;
+        {
+            let f = xs.flatten_all()?.to_dtype(DType::F32)?;
+            let fmax = f.max(0)?.to_scalar::<f32>()?;
+            if fmax.is_nan() || fmax.is_infinite() {
+                let rf = residual.flatten_all()?.to_dtype(DType::F32)?;
+                tracing::error!(
+                    residual_min = rf.min(0)?.to_scalar::<f32>()?,
+                    residual_max = rf.max(0)?.to_scalar::<f32>()?,
+                    post_norm_max = fmax,
+                    "NaN/Inf after input_layernorm"
+                );
+            }
+        }
         let xs = match &self.attn {
             LayerType::FullAttention(attn) => {
                 attn.forward(&xs, attention_mask, input_positions, cache, input_metadata)?
@@ -809,7 +888,20 @@ impl GGUFQWen3_5 {
                 input_metadata,
                 &mut mamba_cache,
                 &seq_slots,
+                self.dtype,
             )?;
+            if _idx <= 3 {
+                let flat = xs.flatten_all()?.to_dtype(DType::F32)?;
+                let min = flat.min(0)?.to_scalar::<f32>()?;
+                let max = flat.max(0)?.to_scalar::<f32>()?;
+                let mean = flat.mean_all()?.to_scalar::<f32>()?;
+                tracing::warn!(
+                    layer = _idx,
+                    dtype = ?xs.dtype(),
+                    min, max, mean,
+                    "Layer output stats"
+                );
+            }
         }
 
         if !seqlens.is_empty() && !return_hidden {
