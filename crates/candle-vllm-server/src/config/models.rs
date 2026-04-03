@@ -1,4 +1,5 @@
 use candle_vllm_core::prompt_cache::PromptCacheConfig;
+use candle_vllm_core::scheduler::kv_compression::KvCacheCompressionConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
@@ -374,6 +375,7 @@ pub struct ModelParams {
     pub frequency_penalty: Option<f32>,
     pub presence_penalty: Option<f32>,
     pub isq: Option<String>,
+    pub kvcache_compression: Option<KvCacheCompressionConfig>,
 
     /// Per-model parking lot overrides
     pub parking_lot: Option<ParkingLotConfig>,

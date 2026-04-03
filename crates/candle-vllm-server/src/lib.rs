@@ -32,11 +32,11 @@ use candle_vllm_core::openai::sampling_params::GenerationConfig;
 use candle_vllm_core::openai::OpenAIServerData;
 use candle_vllm_core::prompt_cache::{CacheBackend, PromptCacheConfig, PromptCacheManager};
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
-use candle_vllm_core::scheduler::kv_compression::KvCacheCompressionConfig;
+use candle_vllm_core::scheduler::kv_compression::{CompressionPolicy, KvCacheCompressionConfig};
 use candle_vllm_core::scheduler::SchedulerConfig;
 use candle_vllm_openai::model_registry::ModelAlias;
 // use candle_vllm_responses::session::ResponsesSession;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,16 +46,25 @@ use tracing::{info, warn};
 const SIZE_IN_MB: usize = 1024 * 1024;
 const TURBOQUANT_HELP: &str = r#"TurboQuant KV-cache compression
 
-TurboQuant KV-cache compression is configured in `models.yaml` / `--models-config`,
-not through standalone CLI flags.
+TurboQuant KV-cache compression can be configured with CLI flags or in
+`models.yaml` / `--models-config`.
 
-Per-model config path:
+CLI flags:
+  --kvcache-compression-bits <2|3|4>
+  --kvcache-compression-policy <always|disabled|threshold_tokens|memory_pressure>
+  --kvcache-compression-threshold-tokens <N>
+  --kvcache-compression-free-block-pct <0.0-1.0>
+
+Per-model config path in models.yaml:
   models[].params.kvcache_compression
 
 Supported fields:
   bits: 2 | 3 | 4
   policy: always | disabled | { threshold_tokens: <N> } |
           { memory_pressure: { free_block_pct: <0.0-1.0> } }
+
+Precedence:
+  CLI TurboQuant flags override models.yaml compression for the selected model.
 
 Example:
   kvcache_compression:
@@ -69,6 +78,8 @@ const MODELS_CONFIG_LONG_HELP: &str = r#"Path to models configuration file (YAML
 TurboQuant KV-cache compression is configured here with:
   models[].params.kvcache_compression
 
+CLI TurboQuant flags override the selected model's compression config.
+
 See `candle-vllm --help` below for the supported TurboQuant fields."#;
 use candle_vllm_core::openai::models::Config;
 use rustchatui::start_ui_server;
@@ -76,6 +87,15 @@ use tokio::sync::Notify;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CompressionPolicyArg {
+    Always,
+    Disabled,
+    ThresholdTokens,
+    MemoryPressure,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     author,
@@ -184,6 +204,22 @@ struct Args {
     #[arg(long)]
     prefill_chunk_size: Option<usize>,
 
+    /// TurboQuant KV-cache compression bit width. Valid values: 2, 3, 4.
+    #[arg(long)]
+    kvcache_compression_bits: Option<u8>,
+
+    /// TurboQuant KV-cache compression policy.
+    #[arg(long, value_enum)]
+    kvcache_compression_policy: Option<CompressionPolicyArg>,
+
+    /// TurboQuant compression threshold in tokens for the `threshold_tokens` policy.
+    #[arg(long)]
+    kvcache_compression_threshold_tokens: Option<usize>,
+
+    /// TurboQuant free-block threshold for the `memory_pressure` policy.
+    #[arg(long)]
+    kvcache_compression_free_block_pct: Option<f32>,
+
     #[arg(long, default_value_t = false)]
     fp8_kvcache: bool,
 
@@ -291,6 +327,144 @@ struct Args {
 //     Ok(())
 // }
 
+fn build_cli_kvcache_compression(
+    bits: Option<u8>,
+    policy: Option<CompressionPolicyArg>,
+    threshold_tokens: Option<usize>,
+    free_block_pct: Option<f32>,
+) -> Result<Option<KvCacheCompressionConfig>> {
+    if bits.is_none() && policy.is_none() && threshold_tokens.is_none() && free_block_pct.is_none()
+    {
+        return Ok(None);
+    }
+
+    let bits = bits.unwrap_or(3);
+    if !matches!(bits, 2..=4) {
+        return Err(candle_core::Error::Msg(format!(
+            "Invalid TurboQuant bit width {bits}. Expected one of: 2, 3, 4."
+        )));
+    }
+
+    if let Some(pct) = free_block_pct {
+        if !(0.0..=1.0).contains(&pct) {
+            return Err(candle_core::Error::Msg(format!(
+                "Invalid TurboQuant free_block_pct {pct}. Expected a value between 0.0 and 1.0."
+            )));
+        }
+    }
+
+    let policy = match policy {
+        Some(CompressionPolicyArg::Always) => {
+            if threshold_tokens.is_some() || free_block_pct.is_some() {
+                return Err(candle_core::Error::Msg(
+                    "TurboQuant policy `always` does not accept threshold or free-block parameters."
+                        .to_string(),
+                ));
+            }
+            CompressionPolicy::Always
+        }
+        Some(CompressionPolicyArg::Disabled) => {
+            if threshold_tokens.is_some() || free_block_pct.is_some() {
+                return Err(candle_core::Error::Msg(
+                    "TurboQuant policy `disabled` does not accept threshold or free-block parameters."
+                        .to_string(),
+                ));
+            }
+            CompressionPolicy::Disabled
+        }
+        Some(CompressionPolicyArg::ThresholdTokens) => {
+            let threshold_tokens = threshold_tokens.ok_or_else(|| {
+                candle_core::Error::Msg(
+                    "TurboQuant policy `threshold_tokens` requires `--kvcache-compression-threshold-tokens`."
+                        .to_string(),
+                )
+            })?;
+            if free_block_pct.is_some() {
+                return Err(candle_core::Error::Msg(
+                    "TurboQuant policy `threshold_tokens` does not accept `--kvcache-compression-free-block-pct`."
+                        .to_string(),
+                ));
+            }
+            CompressionPolicy::ThresholdTokens(threshold_tokens)
+        }
+        Some(CompressionPolicyArg::MemoryPressure) => {
+            let free_block_pct = free_block_pct.ok_or_else(|| {
+                candle_core::Error::Msg(
+                    "TurboQuant policy `memory_pressure` requires `--kvcache-compression-free-block-pct`."
+                        .to_string(),
+                )
+            })?;
+            if threshold_tokens.is_some() {
+                return Err(candle_core::Error::Msg(
+                    "TurboQuant policy `memory_pressure` does not accept `--kvcache-compression-threshold-tokens`."
+                        .to_string(),
+                ));
+            }
+            CompressionPolicy::MemoryPressure { free_block_pct }
+        }
+        None => match (threshold_tokens, free_block_pct) {
+            (Some(threshold_tokens), None) => CompressionPolicy::ThresholdTokens(threshold_tokens),
+            (None, Some(free_block_pct)) => CompressionPolicy::MemoryPressure { free_block_pct },
+            (Some(_), Some(_)) => {
+                return Err(candle_core::Error::Msg(
+                    "TurboQuant CLI options are ambiguous: specify `--kvcache-compression-policy` when both threshold and free-block settings are provided."
+                        .to_string(),
+                ));
+            }
+            (None, None) => CompressionPolicy::ThresholdTokens(4096),
+        },
+    };
+
+    Ok(Some(KvCacheCompressionConfig { bits, policy }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_cli_kvcache_compression, CompressionPolicyArg};
+    use candle_vllm_core::scheduler::kv_compression::CompressionPolicy;
+
+    #[test]
+    fn test_kvcache_compression_defaults_from_bits_only() {
+        let compression = build_cli_kvcache_compression(Some(3), None, None, None)
+            .expect("bits-only TurboQuant config should parse")
+            .expect("bits-only TurboQuant config should enable compression");
+
+        assert_eq!(compression.bits, 3);
+        assert!(matches!(
+            compression.policy,
+            CompressionPolicy::ThresholdTokens(4096)
+        ));
+    }
+
+    #[test]
+    fn test_kvcache_compression_infers_threshold_policy() {
+        let compression = build_cli_kvcache_compression(None, None, Some(2048), None)
+            .expect("threshold TurboQuant config should parse")
+            .expect("threshold TurboQuant config should enable compression");
+
+        assert_eq!(compression.bits, 3);
+        assert!(matches!(
+            compression.policy,
+            CompressionPolicy::ThresholdTokens(2048)
+        ));
+    }
+
+    #[test]
+    fn test_kvcache_compression_requires_policy_parameter_match() {
+        let error = build_cli_kvcache_compression(
+            Some(3),
+            Some(CompressionPolicyArg::MemoryPressure),
+            Some(2048),
+            None,
+        )
+        .expect_err("mismatched TurboQuant policy parameters should fail");
+
+        assert!(error
+            .to_string()
+            .contains("requires `--kvcache-compression-free-block-pct`"));
+    }
+}
+
 /// Load models configuration from file or create default config from CLI args
 fn load_models_config(args: &Args) -> Result<ModelsEngineBuilderConfig> {
     if let Some(config_path) = &args.models_config {
@@ -323,6 +497,12 @@ fn load_models_config(args: &Args) -> Result<ModelsEngineBuilderConfig> {
         fallback_params.kvcache_mem_cpu = Some(args.kvcache_mem_cpu);
         fallback_params.device_ids = args.device_ids.clone();
         fallback_params.prefill_chunk_size = args.prefill_chunk_size;
+        fallback_params.kvcache_compression = build_cli_kvcache_compression(
+            args.kvcache_compression_bits,
+            args.kvcache_compression_policy,
+            args.kvcache_compression_threshold_tokens,
+            args.kvcache_compression_free_block_pct,
+        )?;
 
         // Validate that model path is provided
         if args.weight_path.is_none() && args.model_id.is_none() {
@@ -464,6 +644,16 @@ impl LoadedModelRegistry {
         }
 
         Some(merge_parking_lot_config(per_model, global, None))
+    }
+
+    fn kv_cache_compression(&self, model_name: Option<&str>) -> Option<KvCacheCompressionConfig> {
+        let raw_config = self.raw_config.as_ref()?;
+        let model_name = model_name?;
+        raw_config
+            .models
+            .iter()
+            .find(|model| model.name == model_name)
+            .and_then(|model| model.params.kvcache_compression.clone())
     }
 }
 
@@ -768,6 +958,14 @@ pub async fn run() -> Result<()> {
     // Resolve model choice and parking_lot config in one pass
     let (model_name, resolved_parking_lot) =
         resolve_model_and_scheduler_config(&mut args, &loaded_registry)?;
+    let cli_kv_cache_compression = build_cli_kvcache_compression(
+        args.kvcache_compression_bits,
+        args.kvcache_compression_policy,
+        args.kvcache_compression_threshold_tokens,
+        args.kvcache_compression_free_block_pct,
+    )?;
+    let kv_cache_compression = cli_kv_cache_compression
+        .or_else(|| loaded_registry.kv_cache_compression(model_name.as_deref()));
     // Store model name for later use (before it gets moved)
     let startup_model_name = model_name.clone();
 
@@ -991,7 +1189,7 @@ pub async fn run() -> Result<()> {
             &cfg,
             kv_cache_dtype,
             num_shards,
-            None,
+            kv_cache_compression.as_ref(),
         );
         let cache_engine = CacheEngine::new(
             &cfg,
