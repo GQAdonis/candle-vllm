@@ -209,6 +209,7 @@ impl LlmExecutor {
 
                 let mut generated_tokens: Vec<u32> = Vec::new();
                 let mut generated_text = String::new();
+                let prompt_len = job.tokens.len();
                 let mut all_tokens = job.tokens.clone();
                 let mut current_logits = logits;
                 let mut finish_reason = "length";
@@ -243,11 +244,11 @@ impl LlmExecutor {
                         break;
                     }
 
-                    // Decode token and accumulate text
-                    match self.pipeline.decode(&[next_token]) {
-                        Ok(text) => generated_text.push_str(&text),
-                        Err(_) => {} // Ignore decode errors
-                    }
+                    // Decode full generated sequence to handle byte-fallback BPE correctly
+                    generated_text = self
+                        .pipeline
+                        .decode(&all_tokens[prompt_len..])
+                        .unwrap_or_else(|_| generated_text.clone());
 
                     // Check for custom stop strings
                     if let Some(ref stop_strs) = job.sampling_params.stop {
@@ -556,6 +557,7 @@ impl LlmExecutor {
                 let max_context = job.max_context_len;
 
                 let mut generated_count = 0usize;
+                let prompt_len = job.tokens.len();
                 let mut all_tokens = job.tokens.clone();
                 let mut current_logits = logits;
                 let mut generated_text = String::new();
@@ -597,11 +599,16 @@ impl LlmExecutor {
                     // Check for EOS
                     let is_eos = stop_token_ids.contains(&next_token);
 
-                    // Decode token to text (skip EOS tokens which decode to invalid UTF-8)
+                    // Decode full generated sequence to handle byte-fallback BPE correctly
+                    // (decoding individual tokens can produce U+FFFD for partial UTF-8 bytes)
                     let token_text = if is_eos {
                         String::new()
                     } else {
-                        pipeline.decode(&[next_token]).unwrap_or_default()
+                        let full_text = pipeline
+                            .decode(&all_tokens[prompt_len..])
+                            .unwrap_or_default();
+                        let delta = full_text[generated_text.len()..].to_string();
+                        delta
                     };
                     generated_text.push_str(&token_text);
 

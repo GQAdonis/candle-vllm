@@ -249,6 +249,7 @@ impl InferenceWorker {
 
                 let mut generated_tokens: Vec<u32> = Vec::new();
                 let mut generated_text = String::new();
+                let prompt_len = work.tokens.len();
                 let mut all_tokens = work.tokens.clone();
                 let mut current_logits = logits;
                 let mut finish_reason = "length";
@@ -284,10 +285,11 @@ impl InferenceWorker {
                         break;
                     }
 
-                    // Decode token and accumulate text
-                    if let Ok(text) = self.pipeline.decode(&[next_token]) {
-                        generated_text.push_str(&text);
-                    }
+                    // Decode full generated sequence to handle byte-fallback BPE correctly
+                    generated_text = self
+                        .pipeline
+                        .decode(&all_tokens[prompt_len..])
+                        .unwrap_or_else(|_| generated_text.clone());
 
                     // Check for custom stop strings
                     if let Some(ref stop_strs) = work.sampling_params.stop {
@@ -558,6 +560,7 @@ impl InferenceWorker {
                 let max_context = work.input_metadata.max_context_len;
 
                 let mut generated_count = 0usize;
+                let prompt_len = work.tokens.len();
                 let mut all_tokens = work.tokens.clone();
                 let mut current_logits = logits;
                 let mut generated_text = String::new();
@@ -590,15 +593,18 @@ impl InferenceWorker {
                     // Check for EOS
                     let is_eos = stop_token_ids.contains(&next_token);
 
-                    // Decode token to text (skip EOS tokens which decode to invalid UTF-8)
+                    // Decode full generated sequence to handle byte-fallback BPE correctly
+                    // (decoding individual tokens can produce U+FFFD for partial UTF-8 bytes)
+                    let prev_len = generated_text.len();
                     let token_text = if is_eos {
                         String::new()
                     } else {
-                        self.pipeline
-                            .decode(&[next_token])
-                            .unwrap_or_else(|_| String::new())
+                        generated_text = self
+                            .pipeline
+                            .decode(&all_tokens[prompt_len..])
+                            .unwrap_or_else(|_| generated_text.clone());
+                        generated_text[prev_len..].to_string()
                     };
-                    generated_text.push_str(&token_text);
 
                     // Check for custom stop strings
                     let mut hit_stop_string = false;
