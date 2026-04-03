@@ -590,11 +590,14 @@ impl InferenceWorker {
                     // Check for EOS
                     let is_eos = stop_token_ids.contains(&next_token);
 
-                    // Decode token to text
-                    let token_text = self
-                        .pipeline
-                        .decode(&[next_token])
-                        .unwrap_or_else(|_| String::new());
+                    // Decode token to text (skip EOS tokens which decode to invalid UTF-8)
+                    let token_text = if is_eos {
+                        String::new()
+                    } else {
+                        self.pipeline
+                            .decode(&[next_token])
+                            .unwrap_or_else(|_| String::new())
+                    };
                     generated_text.push_str(&token_text);
 
                     // Check for custom stop strings
