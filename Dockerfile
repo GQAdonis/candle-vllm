@@ -35,7 +35,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Rust toolchain + optional China mirrors
-ARG RUST_TOOLCHAIN=1.92.0
+ARG RUST_TOOLCHAIN=1.94.0
 RUN set -eux; \
     if [ "${CHINA_MIRROR}" = "1" ]; then \
     export RUSTUP_UPDATE_ROOT="https://mirrors.ustc.edu.cn/rust-static/rustup"; \
