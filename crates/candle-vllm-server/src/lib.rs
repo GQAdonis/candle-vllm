@@ -44,6 +44,32 @@ pub mod models_config;
 pub mod routes;
 use tracing::{info, warn};
 const SIZE_IN_MB: usize = 1024 * 1024;
+const TURBOQUANT_HELP: &str = r#"TurboQuant KV-cache compression
+
+TurboQuant KV-cache compression is configured in `models.yaml` / `--models-config`,
+not through standalone CLI flags.
+
+Per-model config path:
+  models[].params.kvcache_compression
+
+Supported fields:
+  bits: 2 | 3 | 4
+  policy: always | disabled | { threshold_tokens: <N> } |
+          { memory_pressure: { free_block_pct: <0.0-1.0> } }
+
+Example:
+  kvcache_compression:
+    bits: 3
+    policy:
+      threshold_tokens: 4096
+"#;
+const MODELS_CONFIG_HELP: &str = "Path to models configuration file (YAML/JSON)";
+const MODELS_CONFIG_LONG_HELP: &str = r#"Path to models configuration file (YAML/JSON).
+
+TurboQuant KV-cache compression is configured here with:
+  models[].params.kvcache_compression
+
+See `candle-vllm --help` below for the supported TurboQuant fields."#;
 use candle_vllm_core::openai::models::Config;
 use rustchatui::start_ui_server;
 use tokio::sync::Notify;
@@ -51,7 +77,13 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about,
+    long_about = None,
+    after_help = TURBOQUANT_HELP
+)]
 struct Args {
     /// Huggingface token environment variable (optional). If not specified, load using hf_token_path.
     #[arg(long)]
@@ -170,8 +202,7 @@ struct Args {
     #[arg(long, default_value_t = 30)]
     request_timeout: u64,
 
-    /// Path to models configuration file (YAML/JSON)
-    #[arg(long)]
+    #[arg(long, help = MODELS_CONFIG_HELP, long_help = MODELS_CONFIG_LONG_HELP)]
     models_config: Option<String>,
 
     /// Enable vision model support
@@ -575,23 +606,22 @@ fn get_cache_config(
     compression: Option<&KvCacheCompressionConfig>,
 ) -> CacheConfig {
     let kv_layers = config.num_hidden_layers.max(1);
-    let num_kv_heads =
-        config.num_key_value_heads.unwrap_or(config.num_attention_heads) / num_shards;
+    let num_kv_heads = config
+        .num_key_value_heads
+        .unwrap_or(config.num_attention_heads)
+        / num_shards;
     let head_dim = config
         .head_dim
         .unwrap_or(config.hidden_size / config.num_attention_heads);
-    let bytes_per_blk =
-        candle_vllm_core::scheduler::kv_compression::bytes_per_block(
-            num_kv_heads,
-            head_dim,
-            block_size,
-            kv_dtype,
-            compression,
-        );
-    let num_gpu_blocks =
-        (kvcache_mem_gpu * SIZE_IN_MB) / (kv_layers * bytes_per_blk.max(1));
-    let num_cpu_blocks =
-        (kvcache_mem_cpu * SIZE_IN_MB) / (kv_layers * bytes_per_blk.max(1));
+    let bytes_per_blk = candle_vllm_core::scheduler::kv_compression::bytes_per_block(
+        num_kv_heads,
+        head_dim,
+        block_size,
+        kv_dtype,
+        compression,
+    );
+    let num_gpu_blocks = (kvcache_mem_gpu * SIZE_IN_MB) / (kv_layers * bytes_per_blk.max(1));
+    let num_cpu_blocks = (kvcache_mem_cpu * SIZE_IN_MB) / (kv_layers * bytes_per_blk.max(1));
     CacheConfig {
         block_size,
         num_gpu_blocks: Some(num_gpu_blocks),
