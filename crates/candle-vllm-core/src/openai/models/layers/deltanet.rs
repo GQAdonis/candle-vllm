@@ -2,15 +2,15 @@
 // Shared Qwen3.5/Qwen3Next GatedDeltaNet linear-attention layer.
 // Adapted from https://github.com/guoqingbao/vllm.rs/blob/main/src/models/layers/deltanet.rs
 
+#[cfg(any(feature = "cuda", feature = "metal"))]
+use crate::attention::gdn;
+use crate::attention::mamba_cache::MambaCache;
+use crate::attention::InputMetadata;
 use crate::openai::distributed::{
     Comm, MergedParallelColumnLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
     VarBuilder,
 };
 use crate::openai::models::{resolve_qwen3_hybrid_config, Config};
-#[cfg(any(feature = "cuda", feature = "metal"))]
-use crate::attention::gdn;
-use crate::attention::mamba_cache::MambaCache;
-use crate::attention::InputMetadata;
 use candle_core::{DType, Result, Tensor};
 use std::rc::Rc;
 
@@ -544,7 +544,8 @@ impl GatedDeltaNet {
             )?
         } else {
             let batch = slot_count;
-            let q_b: Tensor = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
+            let q_b: Tensor =
+                (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
             let k_b: Tensor = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
             let v_b: Tensor = v.reshape((batch, self.num_v_heads, self.head_v_dim))?;
             let g_b: Tensor = g.reshape((batch, self.num_v_heads))?;

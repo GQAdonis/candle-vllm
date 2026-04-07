@@ -1,6 +1,6 @@
-use crate::openai::models::{Config, ScalingValue};
 #[cfg(any(feature = "cuda", feature = "metal"))]
 use crate::attention::fused_rope::FusedRope;
+use crate::openai::models::{Config, ScalingValue};
 use candle::{DType, Device, Result, Tensor, D};
 use candle_core as candle;
 pub use std::rc::Rc;

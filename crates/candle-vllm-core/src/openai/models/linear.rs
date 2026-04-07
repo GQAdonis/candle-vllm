@@ -1065,8 +1065,8 @@ fn load_ln_fp8_with_hints(
     )?;
 
     #[cfg(feature = "cuda")]
-    let sm_version =
-        crate::attention::cuda_utils::sm_version(vb.device().as_cuda_device()?).unwrap_or(0) as usize;
+    let sm_version = crate::attention::cuda_utils::sm_version(vb.device().as_cuda_device()?)
+        .unwrap_or(0) as usize;
 
     #[cfg(not(feature = "cuda"))]
     let sm_version = 0;

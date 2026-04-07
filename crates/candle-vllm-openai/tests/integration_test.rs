@@ -108,6 +108,7 @@ fn test_chat_completion_request_basic() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     assert_eq!(request.model, "mistral-7b");
@@ -173,6 +174,7 @@ fn test_chat_completion_request_with_tools() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     assert!(request.has_tools());
@@ -219,6 +221,7 @@ fn test_chat_completion_request_serialization() {
         parallel_tool_calls: None,
         conversation_id: Some("conv-123".to_string()),
         resource_id: Some("res-456".to_string()),
+        cache_control: None,
     };
 
     let json = serde_json::to_string(&request).expect("Serialization should succeed");

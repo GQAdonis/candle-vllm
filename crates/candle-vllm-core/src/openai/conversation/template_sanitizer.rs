@@ -43,7 +43,9 @@ pub fn sanitize_template(raw: &str) -> String {
     // can produce incorrect results. We leave namespace() as-is since
     // minijinja-contrib pycompat handles it, but log if it's present.
     if t.contains("namespace(") {
-        tracing::debug!("Template uses Jinja2 namespace() — minijinja-contrib pycompat handles this");
+        tracing::debug!(
+            "Template uses Jinja2 namespace() — minijinja-contrib pycompat handles this"
+        );
     }
 
     t

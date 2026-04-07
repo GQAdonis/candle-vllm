@@ -1,13 +1,13 @@
-use super::{rotary_emb::ScalingRotaryEmbedding, Config};
 use super::resolve_qwen3_hybrid_config;
+use super::{rotary_emb::ScalingRotaryEmbedding, Config};
+#[cfg(any(feature = "cuda", feature = "metal"))]
+use crate::attention::gdn;
 use crate::attention::mamba_cache::MambaCache;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::utils::{resolve_input_seqlens, resolve_mamba_seq_slots};
 use crate::{InputMetadata, PagedAttention};
-#[cfg(any(feature = "cuda", feature = "metal"))]
-use crate::attention::gdn;
 use candle_core::quantized::{gguf_file, QMatMul};
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Embedding, Module};
@@ -203,8 +203,7 @@ impl QuantizedGatedDeltaNet {
 
         // Causal conv1d
         let (kv_conv, prefill_conv_state) = if is_prefill {
-            let mut conv_state =
-                mamba_cache.get_batch_conv_state(self.gdn_layer_idx, seq_slots)?;
+            let mut conv_state = mamba_cache.get_batch_conv_state(self.gdn_layer_idx, seq_slots)?;
             let cu_seqlens = input_metadata
                 .cu_seqlens_q
                 .as_ref()
@@ -290,7 +289,13 @@ impl QuantizedGatedDeltaNet {
             let beta_b: Tensor = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
             gdn::gated_delta_rule_decode_slots(
-                &q_b, &k_b, &v_b, &g_b, &beta_b, global_state, seq_slots,
+                &q_b,
+                &k_b,
+                &v_b,
+                &g_b,
+                &beta_b,
+                global_state,
+                seq_slots,
             )?
         };
 
@@ -497,10 +502,8 @@ impl GGUFQWen3_5 {
         } else {
             embedding_length / head_count
         };
-        let context_length =
-            md_get(format!("{arch}.context_length").as_str())?.to_u32()? as usize;
-        let block_count =
-            md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
+        let context_length = md_get(format!("{arch}.context_length").as_str())?.to_u32()? as usize;
+        let block_count = md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
         let rms_norm_eps =
             md_get(format!("{arch}.attention.layer_norm_rms_epsilon").as_str())?.to_f32()? as f64;
         let rope_freq_base = md_get(format!("{arch}.rope.freq_base").as_str())
@@ -525,8 +528,7 @@ impl GGUFQWen3_5 {
             md_get(format!("{arch}.full_attention_interval").as_str())?.to_u32()? as usize;
         let ssm_conv_kernel =
             md_get(format!("{arch}.ssm.conv_kernel").as_str())?.to_u32()? as usize;
-        let ssm_state_size =
-            md_get(format!("{arch}.ssm.state_size").as_str())?.to_u32()? as usize;
+        let ssm_state_size = md_get(format!("{arch}.ssm.state_size").as_str())?.to_u32()? as usize;
         let ssm_group_count =
             md_get(format!("{arch}.ssm.group_count").as_str())?.to_u32()? as usize;
         let ssm_time_step_rank =
@@ -614,16 +616,16 @@ impl GGUFQWen3_5 {
 
             let input_layernorm =
                 ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?;
-            let post_attention_layernorm =
-                ct.tensor(reader, &format!("{prefix}.post_attention_norm.weight"), device)?;
+            let post_attention_layernorm = ct.tensor(
+                reader,
+                &format!("{prefix}.post_attention_norm.weight"),
+                device,
+            )?;
 
             let attn = if layer_type_str == "full_attention" {
-                let attention_wq =
-                    ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
-                let attention_wk =
-                    ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
-                let attention_wv =
-                    ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
+                let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
+                let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
+                let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
                 let attention_wo =
                     ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
                 let q_norm_tensor =
@@ -659,21 +661,31 @@ impl GGUFQWen3_5 {
                 let cur_gdn_idx = gdn_layer_idx;
                 gdn_layer_idx += 1;
 
-                let in_proj_qkv = QMatMul::from_qtensor(
-                    ct.tensor(reader, &format!("{prefix}.attn_qkv.weight"), device)?,
-                )?;
-                let in_proj_z = QMatMul::from_qtensor(
-                    ct.tensor(reader, &format!("{prefix}.attn_gate.weight"), device)?,
-                )?;
-                let in_proj_a = QMatMul::from_qtensor(
-                    ct.tensor(reader, &format!("{prefix}.ssm_alpha.weight"), device)?,
-                )?;
-                let in_proj_b = QMatMul::from_qtensor(
-                    ct.tensor(reader, &format!("{prefix}.ssm_beta.weight"), device)?,
-                )?;
-                let out_proj = QMatMul::from_qtensor(
-                    ct.tensor(reader, &format!("{prefix}.ssm_out.weight"), device)?,
-                )?;
+                let in_proj_qkv = QMatMul::from_qtensor(ct.tensor(
+                    reader,
+                    &format!("{prefix}.attn_qkv.weight"),
+                    device,
+                )?)?;
+                let in_proj_z = QMatMul::from_qtensor(ct.tensor(
+                    reader,
+                    &format!("{prefix}.attn_gate.weight"),
+                    device,
+                )?)?;
+                let in_proj_a = QMatMul::from_qtensor(ct.tensor(
+                    reader,
+                    &format!("{prefix}.ssm_alpha.weight"),
+                    device,
+                )?)?;
+                let in_proj_b = QMatMul::from_qtensor(ct.tensor(
+                    reader,
+                    &format!("{prefix}.ssm_beta.weight"),
+                    device,
+                )?)?;
+                let out_proj = QMatMul::from_qtensor(ct.tensor(
+                    reader,
+                    &format!("{prefix}.ssm_out.weight"),
+                    device,
+                )?)?;
 
                 // Dequantize small tensors needed for GDN kernels.
                 // GGUF stores dims reversed, so candle reads [d_conv, kernel_size].

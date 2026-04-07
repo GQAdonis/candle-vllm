@@ -10,11 +10,11 @@ use super::{
     },
     Config, InputMetadata,
 };
+use crate::attention::mamba_cache::MambaCache;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, rms_norm_x, Comm, ReplicatedLinear, VarBuilder};
 use crate::openai::models::layers::deepstack::ApplyDeepStack;
 use crate::openai::models::mask::get_attention_causal_mask;
-use crate::attention::mamba_cache::MambaCache;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::RmsNorm;

@@ -19,7 +19,12 @@ pub fn get_or_load_func(
         DType::F16 => "_f16",
         DType::F32 => "_f32",
         DType::F64 => "_f64",
-        _ => return Err(APIError::from(format!("unsupported dtype {:?} for kernel", dtype))),
+        _ => {
+            return Err(APIError::from(format!(
+                "unsupported dtype {:?} for kernel",
+                dtype
+            )))
+        }
     };
     let spec = if let Some(suffix) = suffix {
         spec.to_owned() + suffix

@@ -1,3 +1,4 @@
+use crate::attention::moe;
 use crate::candle::quantized::QTensor;
 use crate::openai::distributed::shard;
 use crate::openai::distributed::AllReduce;
@@ -5,7 +6,6 @@ use crate::openai::distributed::{Comm, VarBuilder};
 use crate::openai::models::linear::linear_no_bias;
 use crate::openai::models::linear::Linear;
 use crate::openai::models::{Config, MoEConfig};
-use crate::attention::moe;
 use candle::{DType, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_core::quantized::GgmlDType;

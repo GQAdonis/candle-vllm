@@ -39,6 +39,7 @@ fn test_sampling_params() -> SamplingParams {
         prompt_logprobs: None,
         skip_special_tokens: true,
         thinking: None,
+        mcp_mode: None,
     }
 }
 
@@ -221,6 +222,7 @@ fn test_chat_completion_request_basic() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     assert_eq!(request.model, "test-model");
@@ -268,6 +270,7 @@ fn test_chat_completion_request_with_tools() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     assert!(request.has_tools());
@@ -309,6 +312,7 @@ fn test_chat_completion_request_serialization() {
         parallel_tool_calls: None,
         conversation_id: Some("conv-123".to_string()),
         resource_id: Some("res-456".to_string()),
+        cache_control: None,
     };
 
     let json = serde_json::to_string(&request).expect("Serialization should succeed");
@@ -408,9 +412,12 @@ fn test_chat_completion_response() {
             total_tokens: 15,
             prompt_time_costs: 100,
             completion_time_costs: 200,
+            prompt_tokens_details: None,
         },
         conversation_id: Some("conv-123".to_string()),
         resource_id: None,
+        system_fingerprint: None,
+        extensions: None,
     };
 
     assert_eq!(response.id, "cmpl-123");

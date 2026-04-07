@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use self::config::{Gemma3VLConfig, VisionConfig};
+use crate::attention::ops::NonZeroOp;
 use crate::backend::progress::ProgressReporter;
 use crate::openai::distributed::{Comm, ReplicatedLinear, VarBuilder};
 use crate::openai::models::gemma3::Gemma3;
@@ -11,7 +12,6 @@ use crate::openai::models::layers::others::{conv2d, layer_norm, rms_norm, AvgPoo
 use crate::openai::models::Config;
 use crate::openai::multimodal::ImageData;
 use crate::InputMetadata;
-use crate::attention::ops::NonZeroOp;
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{Activation, Conv2d, Conv2dConfig, Embedding};
 use parking_lot::RwLock;

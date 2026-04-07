@@ -530,7 +530,12 @@ async fn test_request_queue_basic() {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let chat_req = create_test_chat_request("test-model-1");
 
-    let request = QueuedRequest::new("test-model-1".to_string(), chat_req, Some(tx));
+    let request = QueuedRequest::new(
+        "req-basic".to_string(),
+        "test-model-1".to_string(),
+        chat_req,
+        Some(tx),
+    );
 
     // Enqueue the request
     let result = queue.enqueue(request);
@@ -558,7 +563,12 @@ async fn test_request_queue_timeout() {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let chat_req = create_test_chat_request("test-model-1");
 
-    let request = QueuedRequest::new("test-model-1".to_string(), chat_req, Some(tx));
+    let request = QueuedRequest::new(
+        "req-timeout".to_string(),
+        "test-model-1".to_string(),
+        chat_req,
+        Some(tx),
+    );
 
     // Enqueue the request
     queue.enqueue(request).unwrap();
@@ -585,10 +595,15 @@ async fn test_model_manager_queue_drain() {
     let queue = manager.get_or_create_queue("test-model-1");
 
     // Add some requests to the queue
-    for _ in 0..3 {
+    for i in 0..3 {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let chat_req = create_test_chat_request("test-model-1");
-        let request = QueuedRequest::new("test-model-1".to_string(), chat_req, Some(tx));
+        let request = QueuedRequest::new(
+            format!("req-drain-{i}"),
+            "test-model-1".to_string(),
+            chat_req,
+            Some(tx),
+        );
         queue.enqueue(request).unwrap();
     }
 
@@ -680,17 +695,27 @@ async fn test_queue_full_handling() {
     let queue = manager.get_or_create_queue("test-model-1");
 
     // Fill the queue
-    for _ in 0..2 {
+    for i in 0..2 {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let chat_req = create_test_chat_request("test-model-1");
-        let request = QueuedRequest::new("test-model-1".to_string(), chat_req, Some(tx));
+        let request = QueuedRequest::new(
+            format!("req-full-{i}"),
+            "test-model-1".to_string(),
+            chat_req,
+            Some(tx),
+        );
         queue.enqueue(request).unwrap();
     }
 
     // Try to enqueue one more (should fail)
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let chat_req = create_test_chat_request("test-model-1");
-    let request = QueuedRequest::new("test-model-1".to_string(), chat_req, Some(tx));
+    let request = QueuedRequest::new(
+        "req-full-overflow".to_string(),
+        "test-model-1".to_string(),
+        chat_req,
+        Some(tx),
+    );
 
     let result = queue.enqueue(request);
     assert!(result.is_err(), "Should fail when queue is full");
@@ -713,10 +738,15 @@ async fn test_queue_length_tracking() {
 
     // Create queue and add requests
     let queue = manager.get_or_create_queue("test-model-1");
-    for _ in 0..5 {
+    for i in 0..5 {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let chat_req = create_test_chat_request("test-model-1");
-        let request = QueuedRequest::new("test-model-1".to_string(), chat_req, Some(tx));
+        let request = QueuedRequest::new(
+            format!("req-len-{i}"),
+            "test-model-1".to_string(),
+            chat_req,
+            Some(tx),
+        );
         queue.enqueue(request).unwrap();
     }
 
@@ -1288,6 +1318,7 @@ async fn load_model_from_test_config(model_name: &str) -> Option<TestModelData> 
     use candle_vllm_core::openai::sampling_params::GenerationConfig;
     use candle_vllm_core::openai::OpenAIServerData;
     use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
+    use candle_vllm_core::scheduler::prefix_cache::PrefixCacheConfig;
     use candle_vllm_core::scheduler::SchedulerConfig;
     use tokio::sync::Notify;
 
@@ -1358,7 +1389,13 @@ async fn load_model_from_test_config(model_name: &str) -> Option<TestModelData> 
     );
 
     // Create DefaultLoader - same as the server does
-    let loader = DefaultLoader::new(model_id.clone(), weight_path.clone(), weight_file);
+    let loader = DefaultLoader::new(
+        model_id.clone(),
+        weight_path.clone(),
+        weight_file,
+        None,
+        None,
+    );
 
     // Step 1: Prepare model weights (download if needed)
     let (paths, is_gguf) = match loader.prepare_model_weights(hf_token_param.clone(), None) {
@@ -1431,6 +1468,8 @@ async fn load_model_from_test_config(model_name: &str) -> Option<TestModelData> 
                 fully_init: true, // Both num_gpu_blocks and num_cpu_blocks are set
                 dtype: kv_cache_dtype,
                 kvcache_mem_gpu: kv_cache_mem_gpu,
+                mamba_cache_budget_bytes: 0,
+                compression: None,
             };
             let cache_engine = CacheEngine::new(
                 &cfg,
@@ -1463,7 +1502,10 @@ async fn load_model_from_test_config(model_name: &str) -> Option<TestModelData> 
     // Step 4: Create engine with resource-aware scheduling
     let llm_engine = match LLMEngine::new(
         pipelines_with_cache,
-        SchedulerConfig { max_num_seqs },
+        SchedulerConfig {
+            max_num_seqs,
+            prefix_cache: PrefixCacheConfig::default(),
+        },
         &cache_config,
         &config,
         Arc::new(Notify::new()),

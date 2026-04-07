@@ -1,8 +1,8 @@
+#[cfg(feature = "cuda")]
+use crate::attention::sort::ArgSortOp; //Use our custom sort kernel, fix kernel crash on A100
 use crate::candle::D;
 use crate::candle::{DType, Error, Result, Tensor};
 use crate::openai::sampling_params::SamplingParams;
-#[cfg(feature = "cuda")]
-use crate::attention::sort::ArgSortOp; //Use our custom sort kernel, fix kernel crash on A100
 use rand::{distr::Distribution, SeedableRng};
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
@@ -45,7 +45,9 @@ impl LogitsProcessor {
             rng: Arc::new(Mutex::new(rng)),
             sampling,
             #[cfg(feature = "cutlass")]
-            fast_sampler: Arc::new(std::sync::Mutex::new(crate::attention::sampler::Sampler::new())),
+            fast_sampler: Arc::new(std::sync::Mutex::new(
+                crate::attention::sampler::Sampler::new(),
+            )),
         }
     }
 

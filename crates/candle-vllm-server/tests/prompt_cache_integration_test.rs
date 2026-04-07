@@ -8,6 +8,7 @@ use candle_vllm_core::openai::OpenAIServerData;
 use candle_vllm_core::openai::PipelineConfig;
 use candle_vllm_core::prompt_cache::{CacheBackend, PromptCacheConfig, PromptCacheManager};
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
+use candle_vllm_core::scheduler::prefix_cache::PrefixCacheConfig;
 use candle_vllm_core::scheduler::SchedulerConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,7 +56,7 @@ async fn create_test_server_data_with_cache(
     let model_id = model_profile.hf_id.clone();
     let weight_path = model_profile.local_path.clone();
     let weight_file = None; // DefaultLoader expects Option<String> for weight_file
-    let loader = DefaultLoader::new(model_id, weight_path, weight_file);
+    let loader = DefaultLoader::new(model_id, weight_path, weight_file, None, None);
 
     // Set HF_TOKEN env var if we have a token
     if let Some(ref token) = hf_token {
@@ -85,7 +86,7 @@ async fn create_test_server_data_with_cache(
 
     let block_size = 64;
     let max_num_seqs = model_profile.params.max_num_seqs.unwrap_or(16);
-    let (pipelines, pipeline_cfg) = match loader
+    let (pipelines, _pipeline_cfg) = match loader
         .load_model(
             paths,
             dtype,
@@ -133,6 +134,8 @@ async fn create_test_server_data_with_cache(
                 fully_init: true,
                 dtype: kv_cache_dtype,
                 kvcache_mem_gpu: 4096,
+                mamba_cache_budget_bytes: 0,
+                compression: None,
             };
             let cache_engine = CacheEngine::new(
                 &cfg,
@@ -188,6 +191,7 @@ async fn create_test_server_data_with_cache(
         pipelines_with_cache,
         SchedulerConfig {
             max_num_seqs: model_profile.params.max_num_seqs.unwrap_or(16),
+            prefix_cache: PrefixCacheConfig::default(),
         },
         &cache_config,
         &config,

@@ -1,33 +1,35 @@
-use candle_vllm::api::{EngineBuilder, ModelRepo};
-use candle_vllm::openai::requests::ChatCompletionRequest;
-use candle_vllm::openai::requests::Messages;
-use std::collections::HashMap;
+//! Minimal chat generation using the library [`InferenceEngine`] API.
+//!
+//! Usage:
+//!   cargo run --example simple_gen --release --features metal -- /path/to/model
+//!   (on Linux, use `--features cuda` or CPU-appropriate flags as needed.)
 
-fn main() -> anyhow::Result<()> {
-    // let builder = EngineBuilder::new(ModelRepo::ModelPath("/home/GLM-4-9B-0414-Q4_K_M.gguf"))
-    let builder =
-        EngineBuilder::new(ModelRepo::ModelID(("Qwen/Qwen3-0.6B", None))).with_kvcache_mem_gpu(512); // Small mem for testing
+use candle_vllm::{EngineConfig, GenerationParams, InferenceEngine};
+use std::env;
 
-    let engine = builder.build()?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let model_path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/home/Meta-Llama-3.1-8B-Instruct".to_string());
 
-    let mut messages = HashMap::new();
-    messages.insert("role".to_string(), "user".to_string());
-    messages.insert("content".to_string(), "Talk about China.".to_string());
+    println!("Loading model from {}", model_path);
 
-    let request = ChatCompletionRequest {
-        messages: Messages::Map(vec![messages]),
+    let config = EngineConfig::builder()
+        .model_path(model_path)
+        .kv_cache_memory(512)
+        .build()?;
+    let engine = InferenceEngine::new(config).await?;
+
+    let params = GenerationParams {
+        max_tokens: Some(100),
         temperature: Some(0.7),
         top_p: Some(0.95),
-        n: Some(1),
-        max_tokens: Some(100),
-        stream: Some(false),
         ..Default::default()
     };
 
-    let response = engine.generate(vec![request])?;
-    println!("Response: {:?}", response);
-
-    engine.shutdown();
+    let out = engine.generate("Talk about China.", params).await?;
+    println!("Response: {:?}", out.text);
 
     Ok(())
 }

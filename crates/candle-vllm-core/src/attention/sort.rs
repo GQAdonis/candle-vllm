@@ -1,7 +1,8 @@
 use candle::{Result, Tensor};
 use candle_core as candle;
 #[cfg(feature = "cuda")]
-#[allow(unused_imports)] use candle_vllm_kernels::ffi;
+#[allow(unused_imports)]
+use candle_vllm_kernels::ffi;
 
 #[derive(Debug, Clone)]
 struct ArgSort {

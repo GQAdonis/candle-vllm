@@ -6,6 +6,8 @@ mod vision;
 
 use self::config::Mistral3Config;
 use self::vision::VisionModel;
+use crate::attention::ops::NonZeroOp;
+use crate::attention::ops::SplitOp;
 use crate::backend::progress::ProgressReporter;
 use crate::openai::distributed::{Comm, ReplicatedLinear, VarBuilder};
 use crate::openai::models::layers::{
@@ -15,8 +17,6 @@ use crate::openai::models::layers::{
 use crate::openai::models::{mistral::Mistral, Config};
 use crate::openai::multimodal::ImageData;
 use crate::InputMetadata;
-use crate::attention::ops::NonZeroOp;
-use crate::attention::ops::SplitOp;
 use candle_core::{DType, Device, Result, Tensor, D};
 use parking_lot::RwLock;
 

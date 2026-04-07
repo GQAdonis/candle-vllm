@@ -5,10 +5,10 @@
 use candle_core as candle;
 #[cfg(feature = "metal")]
 use candle_core::backend::BackendStorage;
-#[cfg(any(feature = "cuda", feature = "metal"))]
-use candle_core::{DType, Result, Storage, Tensor};
 #[cfg(feature = "cuda")]
 use candle_core::Device;
+#[cfg(any(feature = "cuda", feature = "metal"))]
+use candle_core::{DType, Result, Storage, Tensor};
 #[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;

@@ -369,8 +369,7 @@ impl DefaultConversation {
             Ok(prompt) if !prompt.trim().is_empty() => {
                 // Step 2: Validate the rendered output
                 let markers = super::template_registry::get_expected_markers(&self.name);
-                let valid = markers.is_empty()
-                    || markers.iter().any(|m| prompt.contains(m));
+                let valid = markers.is_empty() || markers.iter().any(|m| prompt.contains(m));
 
                 if valid {
                     tracing::debug!(
@@ -444,8 +443,7 @@ impl DefaultConversation {
             | SeparatorStyle::AddNewLineSingle => {
                 let mut accum = system_prompt + &self.sep;
                 for message in &self.messages {
-                    accum +=
-                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                    accum += &format!("{}: {}{}", message.role, message.content_str(), self.sep);
                 }
                 accum
             }
@@ -454,12 +452,7 @@ impl DefaultConversation {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
                 let mut accum = system_prompt + &self.sep;
                 for (i, message) in self.messages.iter().enumerate() {
-                    accum += &format!(
-                        "{}: {}{}",
-                        message.role,
-                        message.content_str(),
-                        seps[i % 2]
-                    );
+                    accum += &format!("{}: {}{}", message.role, message.content_str(), seps[i % 2]);
                 }
                 accum
             }
@@ -467,8 +460,7 @@ impl DefaultConversation {
             SeparatorStyle::NoColonSingle => {
                 let mut accum = system_prompt.clone();
                 for message in &self.messages {
-                    accum +=
-                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                    accum += &format!("{}: {}{}", message.role, message.content_str(), self.sep);
                 }
                 accum
             }
@@ -477,12 +469,7 @@ impl DefaultConversation {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
                 let mut accum = system_prompt.clone();
                 for (i, message) in self.messages.iter().enumerate() {
-                    accum += &format!(
-                        "{}: {}{}",
-                        message.role,
-                        message.content_str(),
-                        seps[i % 2]
-                    );
+                    accum += &format!("{}: {}{}", message.role, message.content_str(), seps[i % 2]);
                 }
                 accum
             }
@@ -528,7 +515,10 @@ impl DefaultConversation {
                         );
                     } else if message.role.clone() == self.roles.1 {
                         //assistant message
-                        accum += &format!("<|start_header_id|>assistant<|end_header_id|>\n\n {} <|eot_id|>", message.content_str());
+                        accum += &format!(
+                            "<|start_header_id|>assistant<|end_header_id|>\n\n {} <|eot_id|>",
+                            message.content_str()
+                        );
                     } else if i == 0 && !system_prompt.is_empty() {
                         accum += &system_prompt;
                     }
@@ -557,10 +547,8 @@ impl DefaultConversation {
                 for (i, message) in self.messages.iter().enumerate() {
                     if message.role.clone() == self.roles.0 {
                         //user message
-                        accum += &format!(
-                            "<|im_start|>user\n {} <|im_end|>",
-                            message.content_str()
-                        );
+                        accum +=
+                            &format!("<|im_start|>user\n {} <|im_end|>", message.content_str());
                     } else if message.role.clone() == self.roles.1 {
                         //assistant message
                         accum += &format!(
@@ -592,16 +580,10 @@ impl DefaultConversation {
                 for (i, message) in self.messages.iter().enumerate() {
                     if message.role.clone() == self.roles.0 {
                         //user message
-                        accum += &format!(
-                            "<|user|>user\n {}<|endoftext|>",
-                            message.content_str()
-                        );
+                        accum += &format!("<|user|>user\n {}<|endoftext|>", message.content_str());
                     } else if message.role.clone() == self.roles.1 {
                         //assistant message
-                        accum += &format!(
-                            "<|assistant|>\n {}<|endoftext|>",
-                            message.content_str()
-                        );
+                        accum += &format!("<|assistant|>\n {}<|endoftext|>", message.content_str());
                     } else if i == 0 && !system_prompt.is_empty() {
                         accum += &system_prompt;
                     }
@@ -622,8 +604,7 @@ impl DefaultConversation {
                     if i % 2 == 0 {
                         accum += &format!("[Round {}]{}", i / 2 + round_add_n, self.sep);
                     }
-                    accum +=
-                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                    accum += &format!("{}: {}{}", message.role, message.content_str(), self.sep);
                 }
                 accum
             }
@@ -635,12 +616,7 @@ impl DefaultConversation {
                     "".to_string()
                 };
                 for message in &self.messages {
-                    accum += &format!(
-                        "{}\n{}{}\n",
-                        message.role,
-                        message.content_str(),
-                        self.sep
-                    );
+                    accum += &format!("{}\n{}{}\n", message.role, message.content_str(), self.sep);
                 }
                 accum
             }
@@ -690,12 +666,7 @@ impl DefaultConversation {
             SeparatorStyle::Robin => {
                 let mut accum = system_prompt.clone() + &self.sep;
                 for message in &self.messages {
-                    accum += &format!(
-                        "{}:\n{}{}",
-                        message.role,
-                        message.content_str(),
-                        self.sep
-                    );
+                    accum += &format!("{}:\n{}{}", message.role, message.content_str(), self.sep);
                 }
                 accum
             }
@@ -706,8 +677,7 @@ impl DefaultConversation {
                     accum += &format!("{}{}", system_prompt, self.sep)
                 }
                 for message in &self.messages {
-                    accum +=
-                        &format!("{}: {}{}", message.role, message.content_str(), self.sep);
+                    accum += &format!("{}: {}{}", message.role, message.content_str(), self.sep);
                 }
                 accum
             }

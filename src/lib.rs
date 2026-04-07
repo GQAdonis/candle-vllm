@@ -87,8 +87,10 @@ pub fn get_cache_config(
     compression: Option<&candle_vllm_core::scheduler::kv_compression::KvCacheCompressionConfig>,
 ) -> crate::scheduler::cache_engine::CacheConfig {
     let kv_layers = config.kv_cache_num_layers().max(1);
-    let num_kv_heads =
-        config.num_key_value_heads.unwrap_or(config.num_attention_heads) / num_shards;
+    let num_kv_heads = config
+        .num_key_value_heads
+        .unwrap_or(config.num_attention_heads)
+        / num_shards;
     let head_dim = config
         .head_dim
         .unwrap_or(config.hidden_size / config.num_attention_heads);
@@ -100,10 +102,8 @@ pub fn get_cache_config(
         kv_dtype,
         compression,
     );
-    let num_gpu_blocks =
-        (kvcache_mem_gpu * size_in_mb) / (kv_layers.max(1) * bytes_per_blk.max(1));
-    let num_cpu_blocks =
-        (kvcache_mem_cpu * size_in_mb) / (kv_layers.max(1) * bytes_per_blk.max(1));
+    let num_gpu_blocks = (kvcache_mem_gpu * size_in_mb) / (kv_layers.max(1) * bytes_per_blk.max(1));
+    let num_cpu_blocks = (kvcache_mem_cpu * size_in_mb) / (kv_layers.max(1) * bytes_per_blk.max(1));
     crate::scheduler::cache_engine::CacheConfig {
         block_size,
         num_gpu_blocks: Some(num_gpu_blocks),

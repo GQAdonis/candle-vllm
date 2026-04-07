@@ -43,6 +43,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 candle-core = { workspace = true }
 
 [features]
+# Opt-in heavy integration tests (`#[cfg(feature = "integration_tests")]` in tests).
+integration_tests = []
 accelerate = ["candle-vllm-core/accelerate"]
 cuda = ["candle-vllm-core/cuda"]
 metal = ["candle-vllm-core/metal"]

@@ -61,12 +61,7 @@ pub enum CompressionPolicy {
 
 impl CompressionPolicy {
     /// Returns `true` if compression should be applied given the current state.
-    pub fn should_compress(
-        &self,
-        ctx_len: usize,
-        free_blocks: usize,
-        total_blocks: usize,
-    ) -> bool {
+    pub fn should_compress(&self, ctx_len: usize, free_blocks: usize, total_blocks: usize) -> bool {
         match self {
             CompressionPolicy::Always => true,
             CompressionPolicy::ThresholdTokens(n) => ctx_len >= *n,
@@ -125,9 +120,7 @@ impl CompressedLayerCache {
         val_seed: u64,
     ) -> candle_core::Result<Self> {
         if !head_dim.is_power_of_two() {
-            candle_core::bail!(
-                "TurboQuant requires head_dim to be a power of two, got {head_dim}"
-            );
+            candle_core::bail!("TurboQuant requires head_dim to be a power of two, got {head_dim}");
         }
         let tq_key = TurboQuant::new(head_dim, bits, key_seed)
             .map_err(|e| candle_core::Error::Msg(format!("TurboQuant key init: {e}")))?;
@@ -177,7 +170,8 @@ impl CompressedLayerCache {
             );
         }
         let slot_id = (block_id * self.block_size + slot_in_block) as u64;
-        self.slots.insert(slot_id, CompressedSlot { keys: ck, vals: cv });
+        self.slots
+            .insert(slot_id, CompressedSlot { keys: ck, vals: cv });
         Ok(())
     }
 
@@ -187,10 +181,7 @@ impl CompressedLayerCache {
     ///   `[block_idx, slot, head, head_dim_elem]` — all dimensions contiguous.
     ///
     /// Unfilled slots are zero-initialised.
-    fn decompress_to_f32(
-        &self,
-        block_ids: &[usize],
-    ) -> candle_core::Result<(Vec<f32>, Vec<f32>)> {
+    fn decompress_to_f32(&self, block_ids: &[usize]) -> candle_core::Result<(Vec<f32>, Vec<f32>)> {
         let n = block_ids.len();
         let stride = self.block_size * self.num_kv_heads * self.head_dim;
         let total = n * stride;
@@ -512,8 +503,9 @@ mod tests {
                 let stride = num_heads * head_dim;
                 for h in 0..num_heads {
                     let orig_k = &originals[idx].0[h * head_dim..(h + 1) * head_dim];
-                    let rec_off =
-                        block * block_size * num_heads * head_dim + slot * num_heads * head_dim + h * head_dim;
+                    let rec_off = block * block_size * num_heads * head_dim
+                        + slot * num_heads * head_dim
+                        + h * head_dim;
                     let rec_k = &key_buf[rec_off..rec_off + head_dim];
                     let sim = cosine_similarity(orig_k, rec_k);
                     assert!(
@@ -545,7 +537,10 @@ mod tests {
 
     #[test]
     fn test_bytes_per_block_compressed_smaller() {
-        let cfg = KvCacheCompressionConfig { bits: 3, policy: CompressionPolicy::Always };
+        let cfg = KvCacheCompressionConfig {
+            bits: 3,
+            policy: CompressionPolicy::Always,
+        };
         let uncompressed = bytes_per_block(8, 128, 16, DType::F16, None);
         let compressed = bytes_per_block(8, 128, 16, DType::F16, Some(&cfg));
         assert!(
@@ -566,7 +561,9 @@ mod tests {
 
     #[test]
     fn test_policy_memory_pressure() {
-        let policy = CompressionPolicy::MemoryPressure { free_block_pct: 0.2 };
+        let policy = CompressionPolicy::MemoryPressure {
+            free_block_pct: 0.2,
+        };
         assert!(!policy.should_compress(0, 50, 100)); // 50% free → no pressure
         assert!(policy.should_compress(0, 10, 100)); // 10% free → pressure
         assert!(!policy.should_compress(0, 100, 0)); // total=0 → never compress

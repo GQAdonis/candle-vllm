@@ -200,8 +200,9 @@ impl Mlp {
                 let packed_weight = Tensor::cat(&[&gate_weight, &up_weight], 0)?;
                 let packed_scale = Tensor::cat(&[&gate_scale, &up_scale], 0)?;
                 #[cfg(feature = "cuda")]
-                let sm_version = crate::attention::cuda_utils::sm_version(vb.device().as_cuda_device()?)
-                    .unwrap_or(0) as usize;
+                let sm_version =
+                    crate::attention::cuda_utils::sm_version(vb.device().as_cuda_device()?)
+                        .unwrap_or(0) as usize;
                 #[cfg(not(feature = "cuda"))]
                 let sm_version = 0;
                 let merged = MergedParallelColumnLinear::from_packed_local_fp8(

@@ -7,11 +7,11 @@ use std::ptr;
 use std::sync::Arc;
 
 use crate::attention::InputMetadata;
-use candle_core::cuda_backend::cudarc::driver::{sys, DevicePtr};
 use candle_core::cuda_backend::cudarc::driver::sys::{
     CUgraphInstantiate_flags, CUmemPool_attribute, CUmemoryPool, CUstreamCaptureMode,
     CUstreamCaptureStatus,
 };
+use candle_core::cuda_backend::cudarc::driver::{sys, DevicePtr};
 use candle_core::cuda_backend::CudaDevice;
 use candle_core::{DType, Device, Result, Tensor};
 use parking_lot::RwLock;
@@ -64,14 +64,9 @@ fn tensor_copy_(dst: &Tensor, src: &Tensor, _offset: usize) -> Result<()> {
     let (dst_ptr, _dg) = dst_view.device_ptr(&stream);
 
     unsafe {
-        sys::cuMemcpyDtoDAsync_v2(
-            dst_ptr,
-            src_ptr,
-            byte_count as _,
-            dst_dev.cu_stream(),
-        )
-        .result()
-        .map_err(|e| candle_core::Error::Msg(format!("cuMemcpyDtoDAsync failed: {e:?}")))?;
+        sys::cuMemcpyDtoDAsync_v2(dst_ptr, src_ptr, byte_count as _, dst_dev.cu_stream())
+            .result()
+            .map_err(|e| candle_core::Error::Msg(format!("cuMemcpyDtoDAsync failed: {e:?}")))?;
     }
 
     Ok(())
@@ -109,11 +104,15 @@ impl CudaGraph {
 
         let mut graph_exec = MaybeUninit::uninit();
         let cu_graph_exec = unsafe {
-            sys::cuGraphInstantiateWithFlags(graph_exec.as_mut_ptr(), cu_graph, flags as u32 as u64)
-                .result()
-                .map_err(|e| {
-                    candle_core::Error::Msg(format!("cuGraphInstantiateWithFlags failed: {e:?}"))
-                })?;
+            sys::cuGraphInstantiateWithFlags(
+                graph_exec.as_mut_ptr(),
+                cu_graph,
+                flags as u32 as u64,
+            )
+            .result()
+            .map_err(|e| {
+                candle_core::Error::Msg(format!("cuGraphInstantiateWithFlags failed: {e:?}"))
+            })?;
             graph_exec.assume_init()
         };
         Ok(CudaGraph {
@@ -236,14 +235,12 @@ where
 
             let threshold: u64 = u64::MAX;
             sys::cuMemPoolSetAttribute(
-                    pool,
-                    CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
-                    &threshold as *const _ as _,
-                )
-                .result()
-                .map_err(|e| {
-                    candle_core::Error::Msg(format!("cuMemPoolSetAttribute failed: {e:?}"))
-                })?;
+                pool,
+                CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+                &threshold as *const _ as _,
+            )
+            .result()
+            .map_err(|e| candle_core::Error::Msg(format!("cuMemPoolSetAttribute failed: {e:?}")))?;
         }
         Ok(pool)
     }

@@ -1,7 +1,5 @@
 use crate::openai::models::Config;
-use crate::scheduler::kv_compression::{
-    CompressedStore, KvCacheCompressionConfig, KvCacheTensors,
-};
+use crate::scheduler::kv_compression::{CompressedStore, KvCacheCompressionConfig, KvCacheTensors};
 use candle_core::{DType, Device, Result, Tensor};
 use std::{
     collections::HashMap,
@@ -81,9 +79,10 @@ impl CacheEngine {
         let flash_layout = cfg!(any(feature = "flashattn", feature = "flashinfer"));
 
         let compressed_store = if let Some(ref cfg) = cache_config.compression {
-            let num_kv_heads =
-                model_config.num_key_value_heads.unwrap_or(model_config.num_attention_heads)
-                    / num_shards;
+            let num_kv_heads = model_config
+                .num_key_value_heads
+                .unwrap_or(model_config.num_attention_heads)
+                / num_shards;
             let head_dim = model_config
                 .head_dim
                 .unwrap_or(model_config.hidden_size / model_config.num_attention_heads);
@@ -159,27 +158,17 @@ impl CacheEngine {
             let mut tensors = Vec::with_capacity(store.layers.len());
             for layer in &store.layers {
                 let (k, v) = if self.flash_layout {
-                    layer.decompress_all_flash(
-                        self.num_gpu_blocks,
-                        self.dtype,
-                        &self.device,
-                    )?
+                    layer.decompress_all_flash(self.num_gpu_blocks, self.dtype, &self.device)?
                 } else {
-                    layer.decompress_all_standard(
-                        self.num_gpu_blocks,
-                        self.dtype,
-                        &self.device,
-                    )?
+                    layer.decompress_all_standard(self.num_gpu_blocks, self.dtype, &self.device)?
                 };
                 tensors.push((k, v));
             }
             Ok(KvCacheTensors::Decompressed(tensors))
         } else {
             let guard = self.get_kv_cache();
-            let cloned: Vec<(Tensor, Tensor)> = guard
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let cloned: Vec<(Tensor, Tensor)> =
+                guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             Ok(KvCacheTensors::Uncompressed(cloned))
         }
     }

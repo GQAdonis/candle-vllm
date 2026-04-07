@@ -24,8 +24,9 @@ use crate::{
             gemma3_vl::Gemma3ForConditionalGeneration, glm4::GLM4, llama::Llama, mistral::Mistral,
             mistral3_vl::Mistral3ForConditionalGeneration, phi2::Phi2,
             phi4::Phi4ForCausalLM as Phi4, quantized_glm4::GGUFGLM4, quantized_llama::GGUFLLaMa,
-            quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen, quantized_qwen3_5::GGUFQWen3_5, quantized_qwen3_moe::GGUFQWenMoE,
-            qwen::Qwen, qwen3_5::Qwen3_5, qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE,
+            quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen, quantized_qwen3_5::GGUFQWen3_5,
+            quantized_qwen3_moe::GGUFQWenMoE, qwen::Qwen, qwen3_5::Qwen3_5,
+            qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE,
             qwen3_vl::Qwen3VLForConditionalGeneration, stable_lm::StableLM, yi::Yi, Config,
         },
         PipelineConfig,
@@ -81,9 +82,11 @@ pub enum LLMModel {
 fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
     match model {
         LLMModel::Llama(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
-        LLMModel::Qwen(_) | LLMModel::Qwen3_5(_) | LLMModel::Qwen3VL(_) | LLMModel::QWenGGUF(_) | LLMModel::QWen3_5GGUF(_) => {
-            ToolModelType::Qwen
-        }
+        LLMModel::Qwen(_)
+        | LLMModel::Qwen3_5(_)
+        | LLMModel::Qwen3VL(_)
+        | LLMModel::QWenGGUF(_)
+        | LLMModel::QWen3_5GGUF(_) => ToolModelType::Qwen,
         LLMModel::Qwen3MoE(_) | LLMModel::Qwen3_5MoE(_) | LLMModel::QWenGGUFMoE(_) => {
             ToolModelType::Qwen3MoE
         }
@@ -650,9 +653,7 @@ impl DefaultLoader {
                 "Qwen3_5ForCausalLM"
                 | "Qwen3_5ForConditionalGeneration"
                 | "Qwen3_6ForCausalLM"
-                | "Qwen3_6ForConditionalGeneration" => {
-                    Qwen3_5::load_config(&cfile, isq.clone())?
-                }
+                | "Qwen3_6ForConditionalGeneration" => Qwen3_5::load_config(&cfile, isq.clone())?,
                 "Qwen2MoeForCausalLM"
                 | "Qwen3MoeForCausalLM"
                 | "Qwen3VLMoeForConditionalGeneration" => {
@@ -2004,7 +2005,9 @@ impl DefaultPipeline {
     ) -> Result<bool> {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
-            LLMModel::QWen3_5GGUF(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
+            LLMModel::QWen3_5GGUF(model) => {
+                model.capture_mamba_prefix_state(seq_id, hash, preserve)
+            }
             LLMModel::Qwen3_5MoE(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             LLMModel::Qwen3VL(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             _ => Ok(false),

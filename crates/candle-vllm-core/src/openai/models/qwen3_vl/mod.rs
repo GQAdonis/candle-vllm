@@ -6,6 +6,7 @@ pub mod config;
 pub mod input;
 pub mod vision;
 
+use crate::attention::mamba_cache::MambaCache;
 use crate::backend::progress::ProgressReporter;
 use crate::openai::distributed::{Comm, VarBuilder};
 use crate::openai::models::{
@@ -13,7 +14,6 @@ use crate::openai::models::{
 };
 use crate::openai::multimodal::ImageData;
 use crate::InputMetadata;
-use crate::attention::mamba_cache::MambaCache;
 use candle_core::{DType, Device, Result, Tensor, D};
 use config::Qwen3VLConfig;
 use vision::Qwen3VLVisionModel;

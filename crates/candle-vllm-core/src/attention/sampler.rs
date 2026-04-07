@@ -1,6 +1,7 @@
 use candle_core::{Result, Tensor};
 #[cfg(feature = "cuda")]
-#[allow(unused_imports)] use candle_vllm_kernels::ffi;
+#[allow(unused_imports)]
+use candle_vllm_kernels::ffi;
 #[cfg(feature = "metal")]
 use metal;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -92,7 +93,9 @@ impl Sampler {
             }
             DType::F16 => {
                 let logits_ptr = match &cuda_storage.slice {
-                    CudaStorageSlice::F16(inp) => inp.device_ptr(&cuda_stream).0 as *const core::ffi::c_void,
+                    CudaStorageSlice::F16(inp) => {
+                        inp.device_ptr(&cuda_stream).0 as *const core::ffi::c_void
+                    }
                     _ => candle_core::bail!("Dtype mismatch: expected F16 storage"),
                 };
                 unsafe {
@@ -112,7 +115,9 @@ impl Sampler {
             }
             DType::BF16 => {
                 let logits_ptr = match &cuda_storage.slice {
-                    CudaStorageSlice::BF16(inp) => inp.device_ptr(&cuda_stream).0 as *const core::ffi::c_void,
+                    CudaStorageSlice::BF16(inp) => {
+                        inp.device_ptr(&cuda_stream).0 as *const core::ffi::c_void
+                    }
                     _ => candle_core::bail!("Dtype mismatch: expected BF16 storage"),
                 };
                 unsafe {

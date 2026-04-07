@@ -57,12 +57,20 @@ pub fn topk_softmax(logits: &Tensor, topk: usize) -> Result<(Tensor, Tensor)> {
         // );
 
         let topk_weights = candle::CudaStorage::wrap_cuda_slice(topk_weights, dev.clone());
-        let topk_weights =
-            Tensor::from_storage(candle::Storage::Cuda(topk_weights), (num_tokens, topk), candle::op::BackpropOp::none(), false);
+        let topk_weights = Tensor::from_storage(
+            candle::Storage::Cuda(topk_weights),
+            (num_tokens, topk),
+            candle::op::BackpropOp::none(),
+            false,
+        );
 
         let topk_indices = candle::CudaStorage::wrap_cuda_slice(topk_indices, dev.clone());
-        let topk_indices =
-            Tensor::from_storage(candle::Storage::Cuda(topk_indices), (num_tokens, topk), candle::op::BackpropOp::none(), false);
+        let topk_indices = Tensor::from_storage(
+            candle::Storage::Cuda(topk_indices),
+            (num_tokens, topk),
+            candle::op::BackpropOp::none(),
+            false,
+        );
 
         Ok((topk_weights, topk_indices))
     }
