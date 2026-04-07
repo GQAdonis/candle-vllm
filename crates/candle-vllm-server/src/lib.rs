@@ -670,14 +670,23 @@ fn resolve_model_and_scheduler_config(
     loaded_registry: &LoadedModelRegistry,
 ) -> Result<(Option<String>, Option<MergedParkingLotConfig>)> {
     let default_model = loaded_registry.default_model.clone();
+    // Only fall back to the default model if the user has not provided any local model
+    // specification (--w or --f).  When weight_path or weight_file are present the user
+    // is pointing at a specific local file; applying a registry alias on top of those
+    // values corrupts the resolved (model_id, weight_path, weight_file) triple and
+    // triggers the catch-all error in pipeline.rs.
     let model_name = args.model_id.clone().or_else(|| {
-        default_model.clone().map(|default| {
-            info!(
-                "No model specified via CLI, using default model '{}' from config",
+        if args.weight_path.is_none() && args.weight_file.is_none() {
+            default_model.clone().map(|default| {
+                info!(
+                    "No model specified via CLI, using default model '{}' from config",
+                    default
+                );
                 default
-            );
-            default
-        })
+            })
+        } else {
+            None
+        }
     });
 
     // Apply model alias if we have a model name (from CLI or default)

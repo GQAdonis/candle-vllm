@@ -1,5 +1,6 @@
 use super::{
     attention::Attention,
+    is_qwen3_hybrid_arch_name,
     layers::deltanet::GatedDeltaNet,
     resolve_qwen3_hybrid_config,
     rotary_emb::ScalingRotaryEmbedding,
@@ -85,6 +86,10 @@ impl Qwen3_5MoE {
                 | "Qwen3_5MoeForConditionalGeneration"
                 | "Qwen3NextForCausalLM"
                 | "Qwen3NextForConditionalGeneration"
+                | "Qwen3_6MoeForCausalLM"
+                | "Qwen3_6MoeForConditionalGeneration"
+                | "Qwen3_6NextForCausalLM"
+                | "Qwen3_6NextForConditionalGeneration"
         ) {
             if let Some(MoEConfig::QwenMoE(moe_cfg)) = config.moe_config.as_mut() {
                 if let Some(raw) = config.extra_config_json.as_ref() {
@@ -413,6 +418,27 @@ impl Qwen3_5MoE {
 
         let hybrid = resolve_qwen3_hybrid_config(cfg);
         let layer_types = &hybrid.layer_types;
+
+        if let Some(arch_name) = cfg.architectures.as_ref().and_then(|a| a.first()) {
+            if is_qwen3_hybrid_arch_name(arch_name.as_str()) {
+                let full_n = layer_types
+                    .iter()
+                    .filter(|t| t.as_str() == "full_attention")
+                    .count();
+                let linear_n = layer_types
+                    .iter()
+                    .filter(|t| t.as_str() == "linear_attention")
+                    .count();
+                tracing::info!(
+                    event = "qwen_hybrid_layout",
+                    architecture = %arch_name,
+                    kv_cache_layers = cfg.kv_cache_num_layers(),
+                    full_attention_layers = full_n,
+                    linear_attention_layers = linear_n,
+                    "resolved Qwen hybrid MoE attention layout (whitelist arch; required for correct KV/TurboQuant layer count)"
+                );
+            }
+        }
 
         let mut gdn_layer_idx = 0usize;
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);

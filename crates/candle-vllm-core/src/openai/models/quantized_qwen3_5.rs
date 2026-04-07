@@ -125,6 +125,7 @@ impl QuantizedGatedAttention {
     }
 }
 
+#[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
 struct QuantizedGatedDeltaNet {
     in_proj_qkv: QMatMul,
     in_proj_z: QMatMul,
@@ -137,11 +138,14 @@ struct QuantizedGatedDeltaNet {
     gdn_norm_weight: Tensor,
     gdn_norm_bias: Option<Tensor>,
     num_k_heads: usize,
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     num_v_heads: usize,
     head_k_dim: usize,
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     head_v_dim: usize,
     key_dim: usize,
     value_dim: usize,
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     kv_group_size: usize,
     gdn_layer_idx: usize,
     rms_norm_eps: f64,
@@ -149,6 +153,7 @@ struct QuantizedGatedDeltaNet {
 }
 
 impl QuantizedGatedDeltaNet {
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     fn repeat_kv_heads(&self, x: Tensor) -> Result<Tensor> {
         if self.num_k_heads == self.num_v_heads {
             return Ok(x);

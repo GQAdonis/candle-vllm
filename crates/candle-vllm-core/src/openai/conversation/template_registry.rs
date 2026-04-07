@@ -204,7 +204,9 @@ mod tests {
     #[test]
     fn test_qwen_family_lookup() {
         assert!(get_fallback_template("qwen35").is_some());
+        assert!(get_fallback_template("qwen36").is_some());
         assert!(get_fallback_template("Qwen3_5ForCausalLM").is_some());
+        assert!(get_fallback_template("Qwen3_6ForCausalLM").is_some());
         assert!(get_fallback_template("qwen2").is_some());
         assert!(get_fallback_template("qwen3").is_some());
     }

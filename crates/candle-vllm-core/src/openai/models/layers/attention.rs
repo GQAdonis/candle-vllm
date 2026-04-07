@@ -371,6 +371,12 @@ impl Attention {
                 | "Qwen3_5MoeForConditionalGeneration"
                 | "Qwen3NextForCausalLM"
                 | "Qwen3NextForConditionalGeneration"
+                | "Qwen3_6ForCausalLM"
+                | "Qwen3_6ForConditionalGeneration"
+                | "Qwen3_6MoeForCausalLM"
+                | "Qwen3_6MoeForConditionalGeneration"
+                | "Qwen3_6NextForCausalLM"
+                | "Qwen3_6NextForConditionalGeneration"
         );
         // Qwen3.5/Qwen3-Next and Gemma q/k norms use Gemma-style +1 weight semantics.
         let qk_norm_add_one = is_gemma || is_qwen35_or_next;

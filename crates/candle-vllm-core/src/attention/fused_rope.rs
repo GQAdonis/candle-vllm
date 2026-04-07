@@ -7,12 +7,14 @@
 //!
 //! Supports Grouped Query Attention (GQA) where Q and K have different head counts.
 
+#[cfg(any(feature = "cuda", feature = "metal"))]
 use candle_core::{DType, Result, Tensor};
 
 #[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
 
+#[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
 #[derive(Clone, Copy)]
 enum RopeLayout {
     BatchMajor {
@@ -71,6 +73,7 @@ impl RopeLayout {
     }
 }
 
+#[cfg(any(feature = "cuda", feature = "metal"))]
 fn resolve_rope_layout(q: &Tensor, k: &Tensor) -> Result<RopeLayout> {
     match (q.dims().len(), k.dims().len()) {
         (4, 4) => {

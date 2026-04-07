@@ -1,5 +1,6 @@
 use super::{
     attention::Attention,
+    is_qwen3_hybrid_arch_name,
     layers::deltanet::GatedDeltaNet,
     mlp::Mlp,
     resolve_qwen3_hybrid_config,
@@ -204,6 +205,27 @@ impl Qwen3_5 {
 
         let hybrid = resolve_qwen3_hybrid_config(cfg);
         let layer_types = &hybrid.layer_types;
+
+        if let Some(arch) = cfg.architectures.as_ref().and_then(|a| a.first()) {
+            if is_qwen3_hybrid_arch_name(arch.as_str()) {
+                let full_n = layer_types
+                    .iter()
+                    .filter(|t| t.as_str() == "full_attention")
+                    .count();
+                let linear_n = layer_types
+                    .iter()
+                    .filter(|t| t.as_str() == "linear_attention")
+                    .count();
+                tracing::info!(
+                    event = "qwen_hybrid_layout",
+                    architecture = %arch,
+                    kv_cache_layers = cfg.kv_cache_num_layers(),
+                    full_attention_layers = full_n,
+                    linear_attention_layers = linear_n,
+                    "resolved Qwen hybrid attention layout (whitelist arch; required for correct KV/TurboQuant layer count)"
+                );
+            }
+        }
 
         let mut gdn_layer_idx = 0usize;
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);

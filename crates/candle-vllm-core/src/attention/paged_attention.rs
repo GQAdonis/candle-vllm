@@ -1,9 +1,12 @@
+#[cfg(any(feature = "cuda", feature = "metal"))]
 use candle::backend::BackendStorage;
 #[cfg(feature = "cuda")]
 use candle::CudaStorage;
 #[cfg(feature = "metal")]
 use candle::MetalStorage;
-use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
+use candle::{CpuStorage, Layout, Result, Shape, Tensor};
+#[cfg(any(feature = "cuda", feature = "metal"))]
+use candle::{DType, Storage};
 use candle_core as candle;
 #[allow(unused_imports)]
 use half::{bf16, f16};
@@ -12,8 +15,11 @@ struct PagedAttention {
     softmax_scale: f32,
     softcapping: f32,
     key_cache: Tensor,
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     value_cache: Tensor,
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     k_scales: Option<Tensor>,
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     v_scales: Option<Tensor>,
     block_tables: Tensor,
     context_lens: Tensor,
@@ -811,6 +817,7 @@ pub fn paged_attention(
     q.apply_op1(op)
 }
 
+#[allow(dead_code)] // Fields are stored for dispatch; some only accessed via method params in cuda/metal
 struct ReshapeCache {
     value: Tensor,
     key_cache: Tensor,

@@ -3,13 +3,16 @@ use candle::MetalStorage;
 use candle_core as candle;
 #[allow(unused_imports)]
 use candle_core::backend::BackendStorage;
-use candle_core::{DType, Result, Tensor};
+use candle_core::{Result, Tensor};
+#[cfg(any(feature = "cuda", feature = "metal"))]
+use candle_core::DType;
 #[cfg(feature = "cuda")]
 #[allow(unused_imports)]
 use candle_vllm_kernels::ffi;
 
 #[derive(Debug, Clone)]
 struct CausalMask {
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     sliding_window: i32,
 }
 

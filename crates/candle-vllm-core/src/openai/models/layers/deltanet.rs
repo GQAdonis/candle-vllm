@@ -16,11 +16,13 @@ use std::rc::Rc;
 
 enum GdnProjection {
     // Qwen3Next: in_proj_qkvz + in_proj_ba
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     FusedQkvzBa {
         in_proj_qkvz: TensorParallelColumnLinear,
         in_proj_ba: TensorParallelColumnLinear,
     },
     // Qwen3.5: in_proj_qkv + in_proj_z + in_proj_ba + in_proj_a
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     SplitQkvZaLegacy {
         in_proj_qkv: TensorParallelColumnLinear,
         in_proj_z: TensorParallelColumnLinear,
@@ -28,6 +30,7 @@ enum GdnProjection {
         in_proj_a: TensorParallelColumnLinear,
     },
     // Qwen3.5 TP-safe split for packed in_proj_qkv [q|k|v].
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     SplitQkvZaMerged {
         in_proj_qkv: MergedParallelColumnLinear,
         in_proj_z: TensorParallelColumnLinear,
@@ -36,7 +39,9 @@ enum GdnProjection {
     },
 }
 
+#[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
 pub struct GatedDeltaNet {
+    #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
     projection: GdnProjection,
     out_proj: TensorParallelRowLinear,
     conv_weight: Tensor,
@@ -195,6 +200,7 @@ impl GatedDeltaNet {
         candle_core::bail!("Unable to load Qwen3.5/Qwen3Next linear attention projection weights",)
     }
 
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     fn fix_qwen3next_projection_order(
         &self,
         mixed_qkvz: &Tensor,
@@ -230,6 +236,7 @@ impl GatedDeltaNet {
         ))
     }
 
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     fn project_inputs(
         &self,
         xs: &Tensor,
@@ -287,6 +294,7 @@ impl GatedDeltaNet {
         }
     }
 
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     fn repeat_kv_heads(&self, x: Tensor) -> Result<Tensor> {
         if self.num_k_heads == self.num_v_heads {
             return Ok(x);

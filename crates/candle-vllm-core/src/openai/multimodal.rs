@@ -741,7 +741,10 @@ pub fn get_image_config(config: &Config) -> Result<Option<ImageProcessConfig>> {
         | "Qwen3VLMoeForConditionalGeneration"
         | "Qwen3_5ForConditionalGeneration"
         | "Qwen3_5MoeForConditionalGeneration"
-        | "Qwen3NextForConditionalGeneration" => {
+        | "Qwen3NextForConditionalGeneration"
+        | "Qwen3_6ForConditionalGeneration"
+        | "Qwen3_6MoeForConditionalGeneration"
+        | "Qwen3_6NextForConditionalGeneration" => {
             let cfg: Qwen3VLMetaConfig =
                 serde_json::from_str(extra).map_err(candle_core::Error::wrap)?;
             let mut img_cfg = ImageProcessConfig::default(

@@ -470,6 +470,7 @@ impl DefaultLoader {
                         | "qwen2"
                         | "qwen3"
                         | "qwen35"
+                        | "qwen36"
                         | "qwen2moe"
                         | "qwen3moe"
                         | "glm4"
@@ -577,7 +578,7 @@ impl DefaultLoader {
                         SeparatorStyle::Qwen,
                     )
                 }
-                "qwen35" => {
+                "qwen35" | "qwen36" => {
                     let model = GGUFQWen3_5::from_gguf(
                         &content,
                         &mut file,
@@ -646,7 +647,10 @@ impl DefaultLoader {
                 "Qwen2ForCausalLM" | "Qwen3ForCausalLM" | "Qwen3VLForConditionalGeneration" => {
                     Qwen::load_config(&cfile, isq.clone())?
                 }
-                "Qwen3_5ForCausalLM" | "Qwen3_5ForConditionalGeneration" => {
+                "Qwen3_5ForCausalLM"
+                | "Qwen3_5ForConditionalGeneration"
+                | "Qwen3_6ForCausalLM"
+                | "Qwen3_6ForConditionalGeneration" => {
                     Qwen3_5::load_config(&cfile, isq.clone())?
                 }
                 "Qwen2MoeForCausalLM"
@@ -654,10 +658,16 @@ impl DefaultLoader {
                 | "Qwen3VLMoeForConditionalGeneration" => {
                     Qwen3MoE::load_config(&cfile, isq.clone())?
                 }
-                "Qwen3_5MoeForCausalLM" | "Qwen3_5MoeForConditionalGeneration" => {
+                "Qwen3_5MoeForCausalLM"
+                | "Qwen3_5MoeForConditionalGeneration"
+                | "Qwen3_6MoeForCausalLM"
+                | "Qwen3_6MoeForConditionalGeneration" => {
                     Qwen3_5MoE::load_config(&cfile, isq.clone())?
                 }
-                "Qwen3NextForCausalLM" | "Qwen3NextForConditionalGeneration" => {
+                "Qwen3NextForCausalLM"
+                | "Qwen3NextForConditionalGeneration"
+                | "Qwen3_6NextForCausalLM"
+                | "Qwen3_6NextForConditionalGeneration" => {
                     Qwen3_5MoE::load_config(&cfile, isq.clone())?
                 }
                 "Gemma2ForCausalLM" => Gemma::load_config(&cfile, isq.clone())?,
@@ -792,7 +802,7 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Qwen,
                         ),
-                        "Qwen3_5ForCausalLM" => (
+                        "Qwen3_5ForCausalLM" | "Qwen3_6ForCausalLM" => (
                             LLMModel::Qwen3_5(Arc::new(
                                 Qwen3_5::new(
                                     vb,
@@ -804,14 +814,14 @@ impl DefaultLoader {
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
-                                        "Failed to load Qwen3.5 model for arch {} on rank {}: {}",
+                                        "Failed to load Qwen3.5/3.6 hybrid model for arch {} on rank {}: {}",
                                         arch, rank, e
                                     ))
                                 })?
                             )),
                             SeparatorStyle::Qwen,
                         ),
-                        "Qwen3_5ForConditionalGeneration" => (
+                        "Qwen3_5ForConditionalGeneration" | "Qwen3_6ForConditionalGeneration" => (
                             LLMModel::Qwen3VL(Arc::new(
                                 Qwen3VLForConditionalGeneration::new(
                                     vb,
@@ -844,7 +854,10 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Qwen,
                         ),
-                        "Qwen3_5MoeForCausalLM" | "Qwen3NextForCausalLM" => (
+                        "Qwen3_5MoeForCausalLM"
+                        | "Qwen3NextForCausalLM"
+                        | "Qwen3_6MoeForCausalLM"
+                        | "Qwen3_6NextForCausalLM" => (
                             LLMModel::Qwen3_5MoE(Arc::new(
                                 Qwen3_5MoE::new(
                                     vb,
@@ -856,7 +869,7 @@ impl DefaultLoader {
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
-                                        "Failed to load Qwen3.5-MoE model for arch {} on rank {}: {}",
+                                        "Failed to load Qwen3.5/3.6-MoE model for arch {} on rank {}: {}",
                                         arch, rank, e
                                     ))
                                 })?,
@@ -865,6 +878,8 @@ impl DefaultLoader {
                         ),
                         "Qwen3_5MoeForConditionalGeneration"
                         | "Qwen3NextForConditionalGeneration"
+                        | "Qwen3_6MoeForConditionalGeneration"
+                        | "Qwen3_6NextForConditionalGeneration"
                         | "Qwen3VLForConditionalGeneration"
                         | "Qwen3VLMoeForConditionalGeneration" => (
                             LLMModel::Qwen3VL(Arc::new(

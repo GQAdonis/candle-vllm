@@ -246,6 +246,11 @@ Alibaba's Qwen2.5 family has become the leading open-weight choice for
 cost-effective deployment.  The GQA architecture (fewer KV heads than Q heads)
 makes KV-cache especially small, and TurboQuant compresses it further.
 
+For **Qwen 3.6** (`Qwen3_6ForCausalLM`, hybrid layers, GGUF `qwen36`), see
+[QWEN3_6.md](QWEN3_6.md) — TurboQuant uses the same `kv_cache_num_layers()` as
+the uncompressed path; ensure the hybrid arch string is whitelisted so layer
+counts stay aligned.
+
 ### Qwen2.5 Architecture Parameters
 
 | Model | Q heads | KV heads | Head dim | Layers | Context (native) | KV/token FP16 |

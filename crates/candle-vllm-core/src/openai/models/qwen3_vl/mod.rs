@@ -77,7 +77,7 @@ impl Qwen3VLForConditionalGeneration {
                 progress_reporter.clone(),
                 Some("model.language_model".to_string()),
             )?),
-            "Qwen3_5MoeForConditionalGeneration" => {
+            "Qwen3_5MoeForConditionalGeneration" | "Qwen3_6MoeForConditionalGeneration" => {
                 Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
                     vb.clone(),
                     cfg,
@@ -88,16 +88,20 @@ impl Qwen3VLForConditionalGeneration {
                     Some("model.language_model".to_string()),
                 )?)
             }
-            "Qwen3_5ForConditionalGeneration" => Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
-                vb.clone(),
-                cfg,
-                dtype,
-                device,
-                comm.clone(),
-                progress_reporter.clone(),
-                Some("model.language_model".to_string()),
-            )?),
-            "Qwen3NextForConditionalGeneration" if next_is_moe => {
+            "Qwen3_5ForConditionalGeneration" | "Qwen3_6ForConditionalGeneration" => {
+                Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
+                    vb.clone(),
+                    cfg,
+                    dtype,
+                    device,
+                    comm.clone(),
+                    progress_reporter.clone(),
+                    Some("model.language_model".to_string()),
+                )?)
+            }
+            "Qwen3NextForConditionalGeneration" | "Qwen3_6NextForConditionalGeneration"
+                if next_is_moe =>
+            {
                 Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
                     vb.clone(),
                     cfg,
@@ -108,7 +112,7 @@ impl Qwen3VLForConditionalGeneration {
                     Some("model.language_model".to_string()),
                 )?)
             }
-            "Qwen3NextForConditionalGeneration" => {
+            "Qwen3NextForConditionalGeneration" | "Qwen3_6NextForConditionalGeneration" => {
                 Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
                     vb.clone(),
                     cfg,

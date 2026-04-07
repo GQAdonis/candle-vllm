@@ -560,6 +560,32 @@ mod tests {
         assert_eq!(config.original_max_position_embeddings, Some(262_144));
         assert_eq!(config.max_seq_len, 2_097_152);
     }
+
+    #[test]
+    fn test_qwen3_6_hybrid_arch_whitelist() {
+        use super::is_qwen3_hybrid_arch_name;
+
+        assert!(is_qwen3_hybrid_arch_name("Qwen3_6ForCausalLM"));
+        assert!(is_qwen3_hybrid_arch_name("Qwen3_6MoeForCausalLM"));
+        assert!(is_qwen3_hybrid_arch_name("Qwen3_6ForConditionalGeneration"));
+        assert!(is_qwen3_hybrid_arch_name("Qwen3_6NextForCausalLM"));
+    }
+
+    #[test]
+    fn test_qwen3_6_hybrid_resolves_layer_types_and_kv_layer_count() {
+        use super::resolve_qwen3_hybrid_config;
+
+        let mut cfg = test_config(8192);
+        cfg.architectures = Some(vec!["Qwen3_6ForCausalLM".to_string()]);
+        cfg.num_hidden_layers = 4;
+        cfg.extra_config_json = Some(
+            r#"{"layer_types":["full_attention","linear_attention","full_attention","linear_attention"]}"#
+                .to_string(),
+        );
+        let hybrid = resolve_qwen3_hybrid_config(&cfg);
+        assert_eq!(hybrid.layer_types.len(), 4);
+        assert_eq!(cfg.kv_cache_num_layers(), 2);
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -598,6 +624,12 @@ pub fn is_qwen3_hybrid_arch_name(arch: &str) -> bool {
             | "Qwen3_5ForConditionalGeneration"
             | "Qwen3_5MoeForConditionalGeneration"
             | "Qwen3NextForConditionalGeneration"
+            | "Qwen3_6ForCausalLM"
+            | "Qwen3_6MoeForCausalLM"
+            | "Qwen3_6NextForCausalLM"
+            | "Qwen3_6ForConditionalGeneration"
+            | "Qwen3_6MoeForConditionalGeneration"
+            | "Qwen3_6NextForConditionalGeneration"
     )
 }
 

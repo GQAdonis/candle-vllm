@@ -160,6 +160,7 @@ fn is_reasoning_model(model_name: &str) -> bool {
         || name_lower.contains("qwen3.5")
         || name_lower.contains("qwen35")
         || name_lower.contains("qwen3_5")
+        || name_lower.contains("qwen3_6")
 }
 
 /// Check if a token is part of reasoning/thinking output
